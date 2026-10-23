@@ -116,7 +116,7 @@ async function launch(accountId, adminIp) {
       // HTTP/3 (QUIC): 0-RTT connection reuse, znacznie szybszy niż HTTP/2
       // przez wysokie RTT. Facebook, Google i Instagram wspierają QUIC natively.
       '--enable-quic',
-      '--origin-to-force-quic-on=www.facebook.com:443,facebook.com:443,static.xx.fbcdn.net:443,scontent.xx.fbcdn.net:443,www.instagram.com:443,instagram.com:443,mail.google.com:443,accounts.google.com:443',
+      '--origin-to-force-quic-on=www.facebook.com:443,facebook.com:443,static.xx.fbcdn.net:443,scontent.xx.fbcdn.net:443,www.instagram.com:443,instagram.com:443',
       // Nie dławiaj background requestów — chcemy max throughput
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
