@@ -479,22 +479,34 @@ async function launch(accountId, adminIp) {
   // traffic to Google via this proxy stalls, almost certainly the proxy's
   // own anti-abuse throttling). A fresh connection occasionally gets through
   // anyway, so retry a couple of times before giving up.
+  // Facebook / Meta jest wyraźnie wolniejszy niż Google czy Instagram —
+  // zwykle TLS+CDN cold start trwa 10-20s, a przez mobile proxy nawet
+  // więcej. Dajemy mu dłuższy timeout i czekamy tylko na pierwszy render
+  // (domcontentloaded) zamiast na pełny 'load' z wszystkimi fontami/pixelem.
+  const isFb = /facebook\.com|fb\.com/.test(account.startUrl);
+  const navTimeout = isFb ? 45000 : 20000;
+  const loadWaitUntil = isFb ? 'domcontentloaded' : 'load';
   const navigate = async () => {
-    await page.goto(account.startUrl, { waitUntil: 'commit', timeout: 20000 });
-    await page.waitForLoadState('load', { timeout: 20000 });
+    await page.goto(account.startUrl, { waitUntil: 'commit', timeout: navTimeout });
+    await page.waitForLoadState(loadWaitUntil, { timeout: navTimeout });
   };
   (async () => {
     const maxAttempts = 3;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         await navigate();
+        pushLog(accountId, 'nav', `Strona załadowana (próba ${attempt})`);
         return;
       } catch (err) {
+        const reason = String(err.message || err).split('\n')[0].replace(/[<>&]/g, '');
+        pushLog(accountId, 'nav', `próba ${attempt}/${maxAttempts} nie powiodła się: ${reason}`);
         if (attempt === maxAttempts) {
-          const reason = String(err.message || err).split('\n')[0].replace(/[<>&]/g, '');
-          pushLog(accountId, 'nav', `nie udało się otworzyć strony po ${maxAttempts} próbach: ${reason}`);
+          const hasProxy = Boolean(accProxyServer);
+          const hint = hasProxy
+            ? 'Twoje proxy prawdopodobnie zablokowało lub zawiesiło połączenie. Sprawdź czy proxy działa.'
+            : 'Konto NIE MA własnego proxy — strona (szczególnie Facebook) blokuje IP serwera jako datacenter. Dodaj proxy mobile lub residential w formularzu dodawania konta.';
           await page
-            .setContent(`<body style="font:16px sans-serif;padding:2em"><h2>Nie udało się otworzyć ${account.startUrl}</h2><p>${reason}</p><p>Proxy mogło zablokować lub zawiesić połączenie po ${maxAttempts} próbach.</p></body>`)
+            .setContent(`<body style="font:16px sans-serif;padding:2em;max-width:600px"><h2>Nie udało się otworzyć ${account.startUrl}</h2><p style="color:#c00">${reason}</p><p>${hint}</p></body>`)
             .catch(() => {});
         }
       }
