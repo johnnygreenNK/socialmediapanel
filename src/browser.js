@@ -475,43 +475,43 @@ async function launch(accountId, adminIp) {
       }
     }).catch(() => {});
 
-    // Diagnostyka ekranów logowania/2FA: zrzuć co dokładnie jest na stronie
-    // — wszystkie klikalne elementy + tytuł + pierwsze 500 znaków body
-    // — żeby wiedzieć co FB wyświetla i czym to się różni od oczekiwań.
     if (/auth_platform\/afad|two_factor|checkpoint/.test(url)) {
       setTimeout(async () => {
         try {
-          const dump = await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('a, button, [role="button"], div[tabindex]'))
-              .map((el) => {
-                const txt = (el.innerText || el.textContent || '').trim().slice(0, 100);
-                const label = el.getAttribute('aria-label') || '';
-                const href = el.getAttribute('href') || '';
-                if (!txt && !label && !href) return null;
-                return { tag: el.tagName.toLowerCase(), txt, label, href: href.slice(0, 100) };
-              })
-              .filter(Boolean)
-              .slice(0, 40);
-            const h = Array.from(document.querySelectorAll('h1, h2, h3')).map((el) => (el.innerText || '').trim()).filter(Boolean).slice(0, 10);
-            return {
-              title: document.title,
-              headings: h,
-              bodyFirst: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 800),
-              buttons,
-              url: location.href.slice(0, 300),
-            };
-          }).catch((e) => ({ error: String(e.message || e) }));
-
-          console.log(`[flow:${accountId}] 📸 AFAD/2FA DUMP:`);
-          console.log(`  title: ${dump.title}`);
-          console.log(`  headings: ${JSON.stringify(dump.headings)}`);
-          console.log(`  bodyFirst: ${dump.bodyFirst}`);
-          console.log(`  buttons (${(dump.buttons || []).length}):`);
-          for (const b of (dump.buttons || [])) {
-            console.log(`    [${b.tag}] txt="${b.txt}" label="${b.label}" href="${b.href}"`);
+          // KROK 1: policz co w DOMie w ogóle jest — główny frame i iframe
+          const frames = page.frames();
+          console.log(`[flow:${accountId}] 📸 AFAD DUMP — frames count: ${frames.length}`);
+          for (let i = 0; i < frames.length; i++) {
+            const f = frames[i];
+            try {
+              const info = await f.evaluate(() => ({
+                url: location.href.slice(0, 150),
+                title: document.title,
+                bodyLen: (document.body?.innerText || '').length,
+                bodyFirst300: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 300),
+                allElements: document.querySelectorAll('*').length,
+                clickableCount: document.querySelectorAll('a, button, [role="button"], div[tabindex]').length,
+                hasH1: document.querySelectorAll('h1').length,
+              });
+              console.log(`[flow:${accountId}]   frame[${i}] url=${info.url}`);
+              console.log(`[flow:${accountId}]            title="${info.title}" bodyLen=${info.bodyLen} els=${info.allElements} clickables=${info.clickableCount}`);
+              console.log(`[flow:${accountId}]            body: ${info.bodyFirst300}`);
+            } catch (e) {
+              console.log(`[flow:${accountId}]   frame[${i}] evaluate FAILED: ${e.message}`);
+            }
           }
 
-          // Spróbuj kliknąć TAKŻE heurystycznie — szersza lista wzorców
+          // KROK 2: Twardy screenshot (niezależnie od viewer screencast) i wyślij na Telegram
+          const screenshotBuf = await page.screenshot({ type: 'jpeg', quality: 60, fullPage: false, timeout: 10000 }).catch((e) => {
+            console.log(`[flow:${accountId}] screenshot FAILED: ${e.message}`);
+            return null;
+          });
+          if (screenshotBuf) {
+            console.log(`[flow:${accountId}] 📷 screenshot ${screenshotBuf.length} bytes — wysyłam na TG`);
+            telegram.sendDocument(screenshotBuf, `${accountId}-afad.jpg`, `🤖 Co bot widzi na AFAD/2FA (${url.slice(0, 80)})`).catch(() => {});
+          }
+
+          // KROK 3: Spróbuj kliknąć wszystko co wygląda jak "alternative method"
           const clicked = await page.evaluate(() => {
             const PATTERNS = [
               /spróbuj inn/i, /try another/i, /użyj inn/i, /use another/i,
@@ -520,16 +520,13 @@ async function launch(accountId, adminIp) {
               /zaloguj.*inacz/i, /log.*different/i,
               /mam problem/i, /having trouble/i,
               /nie mogę/i, /can't do/i,
-              /przejdź/i,
-              // FB-specific
-              /zrezygnuj/i, /dismiss/i,
+              /przejdź/i, /zrezygnuj/i, /dismiss/i, /anuluj/i, /cancel/i,
             ];
             const els = Array.from(document.querySelectorAll('a, button, [role="button"], div[tabindex]'));
             for (const el of els) {
               const txt = (el.innerText || el.textContent || '').trim();
               const label = el.getAttribute('aria-label') || '';
-              const combined = `${txt} ${label}`;
-              if (PATTERNS.some((p) => p.test(combined))) {
+              if (PATTERNS.some((p) => p.test(`${txt} ${label}`))) {
                 el.click();
                 return txt.slice(0, 80) || label.slice(0, 80);
               }
@@ -539,14 +536,11 @@ async function launch(accountId, adminIp) {
           if (clicked) {
             console.log(`[flow:${accountId}] 🚨 AUTO-CLICKED "${clicked}"`);
             pushLog(accountId, 'nav', `🤖 Auto-klik: ${clicked}`);
-          } else {
-            console.log(`[flow:${accountId}] ⚠️ Nic nie pasuje — zobacz dump wyżej, dostosuj wzorce`);
-            pushLog(accountId, 'nav', `⚠️ AFAD: brak przycisku do klinięcia — sprawdź logi`);
           }
         } catch (e) {
-          console.log(`[flow:${accountId}] AFAD dump error: ${e.message}`);
+          console.log(`[flow:${accountId}] AFAD dump outer error: ${e.message}`);
         }
-      }, 10000); // 10s na stabilizację strony
+      }, 10000);
     }
 
     if (notifiedLogin) return;
