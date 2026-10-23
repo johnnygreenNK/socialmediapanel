@@ -17,9 +17,10 @@ import {
 var NAV_TIMEOUT = 30000;
 var SEARCH_WAIT = 5000;
 // Cap for binary search — anything above this reports ">MAX_EXACT" instead
-// of a precise number, to keep the whole collection fast (~5-7s per big
-// category instead of ~22s). 5000 = 100 Gmail pages at 50 msgs each.
-var MAX_EXACT = 5000;
+// of a precise number, to keep the whole collection fast. 2500 = 50 pages.
+var MAX_EXACT = 2500;
+// How many Gmail tabs run in parallel (each driving its own hash navigation).
+var CONCURRENCY = 4;
 
 var DEFAULT_SEARCHES = [
   { key: 'inbox',       query: 'in:inbox',             label: 'Skrzynka odbiorcza' },
@@ -257,9 +258,19 @@ async function jumpToLastPageViaUrl(page, query, label) {
   async function tryPage(n) {
     await page.evaluate(function(h) { window.location.hash = h; },
       '#search/' + encoded + '/p' + n).catch(function() {});
-    await new Promise(function(r) { setTimeout(r, 2500); });
+    // Wait until the page settles on a state we can read, instead of a
+    // fixed sleep. Usually resolves in 400-900ms.
+    await page.waitForFunction(function() {
+      var t = (document.body.innerText || '').replace(/[   ]/g, ' ');
+      if (/z wielu|of many/i.test(t)) return true;
+      if (/\d+\s*[-–]\s*\d+\s+(?:z|of)\s+\d/i.test(t)) return true;
+      if (/nie znaleziono|nie pasuj|brak wynik|brak wiadom|no messages|no results|nothing matched|didn't match/i.test(t)) return true;
+      // Any visible row count also means the page rendered
+      return document.querySelectorAll('tr.zA, tr[role="row"]').length > 0;
+    }, { timeout: 4000 }).catch(function() {});
+    // Small settle delay for pagination text to appear (fast)
+    await new Promise(function(r) { setTimeout(r, 250); });
     var p = await parsePageCount(page);
-    // Also measure visible row count on this page
     var rows = await page.evaluate(function() {
       return document.querySelectorAll('tr.zA, tr[role="row"]').length;
     }).catch(function() { return 0; });
@@ -357,28 +368,17 @@ async function tryContextRequest(context, ik, at, query) {
 }
 
 async function searchCount(context, page, ik, at, query, label, useContextReq) {
-  // Try context.request API first (fastest, no DOM) — skipped once we know
-  // Gmail's internal view=tl endpoint returns HTML (dead on current Gmail).
-  if (useContextReq) {
-    var apiCount = await tryContextRequest(context, ik, at, query);
-    if (apiCount !== null) {
-      console.log('[gmail-stats] ' + label + ': ' + apiCount + ' (context.request)');
-      return apiCount;
-    }
-  }
-
-  // Try intercepting XHR responses during navigation to the search
-  var interceptResult = await interceptGmailData(page, query, label);
-  if (interceptResult !== null) {
-    console.log('[gmail-stats] ' + label + ': ' + interceptResult + ' (intercept)');
-    return interceptResult;
-  }
-
-  // Make sure we're on the right search page even if intercept gave up.
-  // The hash change is cheap and idempotent.
+  // Navigate to the search via hash and wait for the page to render.
   await page.evaluate(function(h) { window.location.hash = h; },
     '#search/' + encodeURIComponent(query)).catch(function() {});
-  await new Promise(function(r) { setTimeout(r, 2500); });
+  await page.waitForFunction(function() {
+    var t = (document.body.innerText || '').replace(/[   ]/g, ' ');
+    if (/z wielu|of many/i.test(t)) return true;
+    if (/\d+\s*[-–]\s*\d+\s+(?:z|of)\s+\d/i.test(t)) return true;
+    if (/nie znaleziono|nie pasuj|brak wynik|brak wiadom|no messages|no results|nothing matched|didn't match/i.test(t)) return true;
+    return document.querySelectorAll('tr.zA, tr[role="row"]').length > 0;
+  }, { timeout: 5000 }).catch(function() {});
+  await new Promise(function(r) { setTimeout(r, 250); });
 
   var parsed = await parsePageCount(page);
 
@@ -399,145 +399,124 @@ async function searchCount(context, page, ik, at, query, label, useContextReq) {
   return parsed.count;
 }
 
-async function collectViaSPA(context, onProgress) {
+// Open one Gmail tab and make sure it's logged in and settled.
+async function openGmailTab(context) {
   var page = await context.newPage();
+  await page.goto('https://mail.google.com/mail/u/0/#inbox', {
+    waitUntil: 'load',
+    timeout: NAV_TIMEOUT,
+  });
+  // Wait for the real Gmail UI (search box, nav list) instead of a fixed 8s
+  await page.waitForFunction(function() {
+    return !!document.querySelector('div[gh="s"], input[aria-label*="Szukaj"], input[aria-label*="Search"], tr.zA, tr[role="row"]');
+  }, { timeout: 15000 }).catch(function() {});
+  return page;
+}
+
+async function collectViaSPA(context, onProgress) {
+  // Open 1 tab first to verify login, then spin up the rest for the pool.
+  var primary = await openGmailTab(context);
+  var url = primary.url();
+  console.log('[gmail-stats] Gmail loaded, url: ' + url);
+  if (!url.includes('mail.google.com')) {
+    await primary.close().catch(function() {});
+    return { error: 'not_logged_in', url: url };
+  }
+
+  // Open additional tabs in parallel
+  onProgress('Otwieram ' + CONCURRENCY + ' kart Gmaila...');
+  var extraCount = Math.max(0, CONCURRENCY - 1);
+  var extras = await Promise.all(
+    Array.from({ length: extraCount }, function() { return openGmailTab(context); })
+  );
+  var tabs = [primary].concat(extras);
+  console.log('[gmail-stats] ' + tabs.length + ' tabs ready');
+
+  var results = { _source: 'spa', _searches: SEARCHES };
+  var done = 0;
 
   try {
-    var ik = null;
-    var at = null;
-    // Intercept ALL responses to capture tokens and data
-    page.on('response', function(response) {
-      var url = response.url();
-      if (!ik) { var m = url.match(/[?&]ik=([a-f0-9]{6,14})/i); if (m) ik = m[1]; }
-      if (!at) { var m2 = url.match(/[?&]at=([^&]{10,})/); if (m2) at = m2[1]; }
-    });
-
-    onProgress('Ładowanie Gmail...');
-    await page.goto('https://mail.google.com/mail/u/0/#inbox', {
-      waitUntil: 'load',
-      timeout: NAV_TIMEOUT,
-    });
-    await new Promise(function(r) { setTimeout(r, 8000); });
-
-    var url = page.url();
-    console.log('[gmail-stats] Gmail loaded, url: ' + url);
-    console.log('[gmail-stats] tokens: ik=' + (ik || 'NONE') + ' at=' + (at ? at.substring(0, 20) + '...' : 'NONE'));
-
-    if (!url.includes('mail.google.com')) {
-      return { error: 'not_logged_in', url: url };
-    }
-
-    // Also try to extract tokens from page JavaScript globals
-    if (!ik || !at) {
-      var tokens = await page.evaluate(function() {
-        var result = {};
-        // Gmail stores GLOBALS with ik and at tokens
-        try {
-          var scripts = document.querySelectorAll('script');
-          for (var i = 0; i < scripts.length; i++) {
-            var t = scripts[i].textContent || '';
-            if (!result.ik) {
-              var ikm = t.match(/\bik\s*[:=]\s*["']([a-f0-9]{6,14})["']/i);
-              if (ikm) result.ik = ikm[1];
-            }
-            if (!result.at) {
-              var atm = t.match(/\bat\s*[:=]\s*["']([^"']{10,})["']/);
-              if (atm) result.at = atm[1];
-            }
+    // Work-stealing pool: tabs pull next search from a shared queue.
+    var queue = SEARCHES.slice();
+    var workers = tabs.map(function(page, idx) {
+      return (async function() {
+        while (queue.length > 0) {
+          var s = queue.shift();
+          if (!s) break;
+          try {
+            results[s.key] = await searchCount(null, page, null, null, s.query, s.label, false);
+          } catch (e) {
+            console.log('[gmail-stats] ' + s.label + ' error: ' + e.message);
+            results[s.key] = null;
           }
-        } catch {}
-        // Try GM_ACTION_TOKEN
-        try {
-          if (typeof GM_ACTION_TOKEN !== 'undefined') result.at = GM_ACTION_TOKEN;
-        } catch {}
-        // Try GLOBALS
-        try {
-          if (typeof GLOBALS !== 'undefined' && GLOBALS[9]) result.at = GLOBALS[9];
-          if (typeof GLOBALS !== 'undefined' && GLOBALS[10]) result.ik = GLOBALS[10];
-        } catch {}
-        return result;
-      }).catch(function() { return {}; });
-
-      if (tokens.ik && !ik) { ik = tokens.ik; console.log('[gmail-stats] ik from page: ' + ik); }
-      if (tokens.at && !at) { at = tokens.at; console.log('[gmail-stats] at from page: ' + at.substring(0, 20) + '...'); }
-    }
-
-    // Test context.request
-    var useContextReq = false;
-    if (ik && at) {
-      var testCount = await tryContextRequest(context, ik, at, 'in:sent');
-      if (testCount !== null) {
-        useContextReq = true;
-        console.log('[gmail-stats] context.request works! in:sent = ' + testCount);
-      }
-    }
-
-    var results = { _source: 'spa', _searches: SEARCHES };
-
-    for (var i = 0; i < SEARCHES.length; i++) {
-      var s = SEARCHES[i];
-      onProgress('[' + (i + 1) + '/' + SEARCHES.length + '] ' + s.label + '...');
-      results[s.key] = await searchCount(context, page, ik, at, s.query, s.label, useContextReq);
-    }
+          done++;
+          onProgress('[' + done + '/' + SEARCHES.length + '] ' + s.label + ' ✓');
+        }
+      })();
+    });
+    await Promise.all(workers);
 
     // Contacts
-    onProgress('Ładowanie kontaktów...');
-    try {
-      await page.goto('https://contacts.google.com/', {
-        waitUntil: 'domcontentloaded',
-        timeout: NAV_TIMEOUT,
-      });
-      var deadline = Date.now() + 10000;
-      while (Date.now() < deadline) {
-        var cnt = await page.evaluate(function() {
-          var text = document.body.innerText || '';
-          // PL: "123 kontakty", EN: "123 contacts"
-          var m = text.match(/(\d[\d\s,]*)\s+(?:kontakt|contact)/i);
-          if (m) return parseInt(m[1].replace(/\D/g, ''));
-          // Also try aria labels
-          var els = document.querySelectorAll('[aria-label*="kontakt"], [aria-label*="contact"]');
-          for (var i = 0; i < els.length; i++) {
-            var am = els[i].getAttribute('aria-label').match(/(\d+)/);
-            if (am) return parseInt(am[1]);
+    // Contacts & storage run on the primary tab in parallel with each other.
+    onProgress('Kontakty + pamięć...');
+    var [contacts, storage] = await Promise.all([
+      (async function() {
+        try {
+          var p2 = tabs[1] || primary; // use a worker tab if available
+          await p2.goto('https://contacts.google.com/', {
+            waitUntil: 'domcontentloaded',
+            timeout: NAV_TIMEOUT,
+          });
+          var deadline = Date.now() + 8000;
+          while (Date.now() < deadline) {
+            var cnt = await p2.evaluate(function() {
+              var text = document.body.innerText || '';
+              var m = text.match(/(\d[\d\s,]*)\s+(?:kontakt|contact)/i);
+              if (m) return parseInt(m[1].replace(/\D/g, ''));
+              var els = document.querySelectorAll('[aria-label*="kontakt"], [aria-label*="contact"]');
+              for (var i = 0; i < els.length; i++) {
+                var am = els[i].getAttribute('aria-label').match(/(\d+)/);
+                if (am) return parseInt(am[1]);
+              }
+              return null;
+            });
+            if (cnt !== null) return cnt;
+            await new Promise(function(r) { setTimeout(r, 400); });
           }
-          return null;
-        });
-        if (cnt !== null) { results.contacts = cnt; break; }
-        await new Promise(function(r) { setTimeout(r, 500); });
-      }
-    } catch(e) {
-      results.contacts = null;
-    }
-
-    // Storage
-    onProgress('Pobieranie użycia pamięci...');
-    try {
-      await page.goto('https://mail.google.com/mail/u/0/#inbox', {
-        waitUntil: 'load',
-        timeout: NAV_TIMEOUT,
-      });
-      await new Promise(function(r) { setTimeout(r, 3000); });
-      var storage = await page.evaluate(function() {
-        var text = document.body.innerText;
-        // PL: "Używasz 10% z 15 GB"
-        var m = text.match(/Używasz\s+(\d+)\s*%\s+z\s+([\d,.]+\s*GB)/i);
-        if (m) return { used: m[1] + '%', percent: parseInt(m[1]), total: m[2].trim() };
-        // EN: "1.23 GB (10%) of 15 GB"
-        var m2 = text.match(/([\d,.]+\s*(?:GB|MB|KB))\s*\((\d+)%\)\s+(?:of|z)\s+([\d,.]+\s*GB)/i);
-        if (m2) return { used: m2[1].trim(), percent: parseInt(m2[2]), total: m2[3].trim() };
-        // Generic: "X of Y GB used" / "X z Y GB"
-        var m3 = text.match(/([\d,.]+\s*(?:GB|MB))\s+(?:of|z)\s+([\d,.]+\s*GB)\s+(?:used|wykorzystano)?/i);
-        if (m3) return { used: m3[1].trim(), total: m3[2].trim() };
+        } catch(e) {}
         return null;
-      });
-      if (storage) results.storage = storage;
-    } catch(e) {}
+      })(),
+      (async function() {
+        try {
+          // Primary tab is already on Gmail — just wait for the storage line
+          await primary.evaluate(function(h) { window.location.hash = h; }, '#inbox').catch(() => {});
+          var deadline = Date.now() + 6000;
+          while (Date.now() < deadline) {
+            var storage = await primary.evaluate(function() {
+              var text = document.body.innerText || '';
+              var m = text.match(/Używasz\s+(\d+)\s*%\s+z\s+([\d,.]+\s*GB)/i);
+              if (m) return { used: m[1] + '%', percent: parseInt(m[1]), total: m[2].trim() };
+              var m2 = text.match(/([\d,.]+\s*(?:GB|MB|KB))\s*\((\d+)%\)\s+(?:of|z)\s+([\d,.]+\s*GB)/i);
+              if (m2) return { used: m2[1].trim(), percent: parseInt(m2[2]), total: m2[3].trim() };
+              return null;
+            }).catch(() => null);
+            if (storage) return storage;
+            await new Promise(function(r) { setTimeout(r, 400); });
+          }
+        } catch(e) {}
+        return null;
+      })(),
+    ]);
+    if (contacts !== null) results.contacts = contacts;
+    if (storage) results.storage = storage;
 
     onProgress('Gotowe!');
     return results;
 
   } finally {
-    await page.close().catch(function() {});
+    for (var i = 0; i < tabs.length; i++) {
+      await tabs[i].close().catch(function() {});
+    }
   }
 }
 
