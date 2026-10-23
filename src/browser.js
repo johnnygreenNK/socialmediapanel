@@ -47,6 +47,31 @@ function profilePath(accountId) {
   return path.join(config.dataDir, 'profiles', accountId);
 }
 
+// Remove the Chromium profile dir for an account — called when a new
+// account is created (so a leftover profile from a prior same-id account
+// doesn't pre-seed cookies) and when an account is deleted (cleanup).
+// Does nothing if the dir doesn't exist.
+export async function wipeProfile(accountId) {
+  const dir = profilePath(accountId);
+  try {
+    await fsp.rm(dir, { recursive: true, force: true });
+    return true;
+  } catch (err) {
+    console.error('[browser] wipeProfile failed for', accountId, ':', err.message);
+    return false;
+  }
+}
+
+// True iff a profile dir already exists on disk for this account id.
+export async function profileExists(accountId) {
+  try {
+    await fsp.access(profilePath(accountId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function launch(accountId, adminIp) {
   const account = await getAccount(accountId);
   if (!account) throw new Error(`unknown account: ${accountId}`);

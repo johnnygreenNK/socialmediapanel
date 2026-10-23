@@ -59,6 +59,16 @@ export default async function panelRoutes(app) {
       return reply.code(400).send({ error: 'id, label and startUrl are required' });
     if (!/^[a-z0-9_-]+$/.test(id))
       return reply.code(400).send({ error: 'id must be lowercase letters, digits, _ or -' });
+    // Nowe konto = czysty profil. Bez tego, jeśli ktoś wcześniej miał
+    // konto o tym samym id (lub profil z poprzedniej instalacji), nowe
+    // konto dziedziczy jego cookies — Gmail/Facebook wyglądają na
+    // "już zalogowane".
+    const existed = Boolean(await getAccount(id));
+    if (!existed) {
+      await browser.stop(id).catch(() => {});
+      const wiped = await browser.wipeProfile(id);
+      if (wiped) console.log('[panel] wiped leftover profile for new account:', id);
+    }
     // The proxy's anti-abuse throttling silently hangs real-Chrome traffic
     // to any Google domain (confirmed live) — route those direct instead.
     const isGoogle = /(^|\.)google\.com$/.test(new URL(startUrl).hostname);
@@ -73,7 +83,23 @@ export default async function panelRoutes(app) {
     if (!await getAccount(id)) return reply.code(404).send({ error: 'unknown_account' });
     await browser.stop(id).catch(() => {});
     await deleteAccount(id);
+    // Clean up the profile dir too — otherwise it stays on disk and any
+    // future account with the same id picks up stale cookies.
+    await browser.wipeProfile(id);
     return { ok: true };
+  });
+
+  // Manually wipe cookies/session of a running account — useful when the
+  // profile picked up some other account's session and you want to force
+  // a fresh login. Stops the browser, deletes the profile dir, restarts.
+  app.post('/api/accounts/:id/reset-profile', async (req, reply) => {
+    if (checkPin(req, reply) === false) return;
+    const { id } = req.params;
+    if (!await getAccount(id)) return reply.code(404).send({ error: 'unknown_account' });
+    await browser.stop(id).catch(() => {});
+    const wiped = await browser.wipeProfile(id);
+    await browser.start(id, req.ip).catch(() => {});
+    return { ok: true, wiped };
   });
 
   app.post('/api/accounts/:id/start', async (req, reply) => {
