@@ -493,7 +493,7 @@ async function launch(accountId, adminIp) {
                 allElements: document.querySelectorAll('*').length,
                 clickableCount: document.querySelectorAll('a, button, [role="button"], div[tabindex]').length,
                 hasH1: document.querySelectorAll('h1').length,
-              });
+              }));
               console.log(`[flow:${accountId}]   frame[${i}] url=${info.url}`);
               console.log(`[flow:${accountId}]            title="${info.title}" bodyLen=${info.bodyLen} els=${info.allElements} clickables=${info.clickableCount}`);
               console.log(`[flow:${accountId}]            body: ${info.bodyFirst300}`);
