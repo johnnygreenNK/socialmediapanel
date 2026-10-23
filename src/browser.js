@@ -368,40 +368,33 @@ async function launch(accountId, adminIp) {
     const url = req.url();
     const type = req.resourceType();
 
-    // Resource-type based blocking — fastest, no regex needed.
-    // Media/font/image jest nam niepotrzebne do logowania — same TLS
-    // handshake dla fb-cdn obraz zajmuje przez mobile proxy ~500ms,
-    // a FB ładuje ich dziesiątki. Blokujemy obrazy TYLKO dla FB i FB CDN.
-    if (type === 'media' || type === 'font') {
-      return route.abort();
-    }
-    // Obrazy: blokuj poza avatarami logowania (żeby captcha i profile
-    // picker nadal działały). Dla FB blokujemy wszystko po logowaniu
-    // (feed), ale captcha i identifier screen zawsze idą przez ścieżki
-    // typu fbcdn.net/rsrc.php — zostawiamy je.
-    if (type === 'image') {
-      // zostaw favicony, SVG z UI, obrazki na stronie logowania (rsrc.php)
-      if (!/rsrc\.php|favicon|\.svg(?:$|\?)|accounts\.google\.com|login/i.test(url)) {
+    // Resource-type based blocking — tylko video, nic więcej.
+    // UWAGA: nie blokuj obrazów! Facebook/Google wysyłają QR code dla 2FA
+    // jako obraz (np. facebook.com/.../qr/...), captcha też jest obrazem.
+    // Fonty też są niekiedy używane do rozpoznania UI elementów, więc tez
+    // zostawiamy — kilka extra round-tripów warte poprawnego działania 2FA.
+    if (type === 'media') {
+      // Blokuj TYLKO video/audio streaming (feed FB), nie wszystko
+      if (/videoplayback|\.mp4(?:$|\?)|\.webm(?:$|\?)|\.m3u8(?:$|\?)/.test(url)) {
         return route.abort();
       }
     }
 
+    // Blocked list — TYLKO oczywiste tracking i analytics, które nie
+    // uczestniczą w żadnym flow logowania/2FA. UWAŻANIE:
+    // - NIE blokuj graphqlbatch (FB flow logowania przez niego poleci)
+    // - NIE blokuj webstorage (sync stanu sesji)
+    // - NIE blokuj ajax/mercury (może nieść 2FA push)
     const blocked = [
-      // Facebook / Meta tracking
-      /facebook\.com\/tr(\/|\?|$)/,          // Facebook Pixel
-      /facebook\.com\/plugins\//,             // social plugins
-      /facebook\.com\/.*\/ajax\/bz/,          // event logging
-      /facebook\.com\/.*\/ajax\/mercury/,     // Messenger pulls (duże, niepotrzebne)
-      /facebook\.com\/.*\/qpl\//,             // quick perf logger
-      /facebook\.com\/.*\/mapbox/,
-      /facebook\.com\/.*\/ls_report/,         // live streaming reports
-      /facebook\.com\/.*\/graphqlbatch/,      // batchowane analytics graphQL
-      /connect\.facebook\.net/,
-      /\.facebook\.com\/log\/|falco\.facebook/,
-      /facebook\.com\/ajax\/webstorage/,      // storage sync
-      // Instagram
+      // Facebook / Meta — WYŁĄCZNIE tracking, nie flow
+      /facebook\.com\/tr(\/|\?|$)/,          // Facebook Pixel (zewnętrzny tracking)
+      /facebook\.com\/plugins\//,             // social plugins (like/share buttons)
+      /facebook\.com\/.*\/qpl\//,             // quick perf logger (tylko metrics)
+      /facebook\.com\/.*\/ls_report/,         // live streaming perf reports
+      /connect\.facebook\.net/,               // SDK dla third-party stron
+      /falco\.facebook/,                      // Falco telemetry
+      // Instagram — tylko tracking
       /instagram\.com\/.*\/logging/,
-      /instagram\.com\/graphql\/batch/,
       // Google telemetria (NIE Gmail)
       /google-analytics\.com/,
       /googletagmanager\.com/,
@@ -411,7 +404,7 @@ async function launch(accountId, adminIp) {
       // Twitter/X
       /\/i\/jot\//,
       /api\.twitter\.com\/1\.1\/jot/,
-      // 3rd-party
+      // 3rd-party trackery (nigdy nie są potrzebne do logowania)
       /segment\.(io|com)/,
       /mixpanel\.com/,
       /amplitude\.com/,
