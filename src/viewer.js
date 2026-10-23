@@ -115,8 +115,8 @@ export default async function viewerRoutes(app) {
           sendTimeTotal += Date.now() - t0;
           bytesTotal += data.length;
         }
-      } catch {
-        /* transient CDP error (e.g. navigation mid-capture) */
+      } catch (err) {
+        req.log.warn({ accountId: resolvedId, err: String(err?.message || err).slice(0, 200) }, '[viewer] captureScreenshot error — CDP session may be stale');
       } finally {
         captureInFlight = false;
         if (captureQueued) { captureQueued = false; captureAndSend(); }
@@ -221,17 +221,14 @@ export default async function viewerRoutes(app) {
       clearTimeout(navDebounce);
       navDebounce = setTimeout(() => {
         enqueueArm(async () => {
+          // Always rebind after navigation — a stale CDP session silently
+          // captures from the old renderer and freezes the canvas.
           try {
+            await rebindSession();
             await armScreencast(currentSize.width, currentSize.height);
-            req.log.info({ accountId: resolvedId }, '[viewer] screencast re-armed after nav');
-          } catch {
-            try {
-              await rebindSession();
-              await armScreencast(currentSize.width, currentSize.height);
-              req.log.info({ accountId: resolvedId }, '[viewer] screencast re-armed after rebind');
-            } catch {
-              req.log.warn({ accountId: resolvedId }, '[viewer] screencast re-arm FAILED after rebind');
-            }
+            req.log.info({ accountId: resolvedId }, '[viewer] screencast re-armed after nav+rebind');
+          } catch (err) {
+            req.log.warn({ accountId: resolvedId, err: String(err?.message || err).slice(0, 150) }, '[viewer] screencast re-arm FAILED after nav');
           }
         });
       }, 200);
