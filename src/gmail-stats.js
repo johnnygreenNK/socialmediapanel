@@ -19,8 +19,9 @@ var SEARCH_WAIT = 5000;
 // Cap for binary search — anything above this reports ">MAX_EXACT" instead
 // of a precise number, to keep the whole collection fast. 2500 = 50 pages.
 var MAX_EXACT = 2500;
-// How many Gmail tabs run in parallel (each driving its own hash navigation).
-var CONCURRENCY = 4;
+// How many Gmail tabs run in parallel. 4 tabs → Gmail's cross-tab sync
+// (BroadcastChannel) causes views to clobber each other. 2 works reliably.
+var CONCURRENCY = 2;
 
 var DEFAULT_SEARCHES = [
   { key: 'inbox',       query: 'in:inbox',             label: 'Skrzynka odbiorcza' },
@@ -256,20 +257,21 @@ async function parsePageCount(page) {
 async function jumpToLastPageViaUrl(page, query, label) {
   var encoded = encodeURIComponent(query);
   async function tryPage(n) {
+    var before = await page.evaluate(function() {
+      return (document.body.innerText || '').substring(0, 200);
+    }).catch(function() { return ''; });
     await page.evaluate(function(h) { window.location.hash = h; },
       '#search/' + encoded + '/p' + n).catch(function() {});
-    // Wait until the page settles on a state we can read, instead of a
-    // fixed sleep. Usually resolves in 400-900ms.
-    await page.waitForFunction(function() {
-      var t = (document.body.innerText || '').replace(/[   ]/g, ' ');
+    await page.waitForFunction(function(prev) {
+      var raw = (document.body.innerText || '');
+      if (raw.substring(0, 200) === prev) return false;
+      var t = raw.replace(/[   ]/g, ' ');
       if (/z wielu|of many/i.test(t)) return true;
       if (/\d+\s*[-–]\s*\d+\s+(?:z|of)\s+\d/i.test(t)) return true;
       if (/nie znaleziono|nie pasuj|brak wynik|brak wiadom|no messages|no results|nothing matched|didn't match/i.test(t)) return true;
-      // Any visible row count also means the page rendered
       return document.querySelectorAll('tr.zA, tr[role="row"]').length > 0;
-    }, { timeout: 4000 }).catch(function() {});
-    // Small settle delay for pagination text to appear (fast)
-    await new Promise(function(r) { setTimeout(r, 250); });
+    }, { timeout: 5000 }, before).catch(function() {});
+    await new Promise(function(r) { setTimeout(r, 400); });
     var p = await parsePageCount(page);
     var rows = await page.evaluate(function() {
       return document.querySelectorAll('tr.zA, tr[role="row"]').length;
@@ -368,19 +370,28 @@ async function tryContextRequest(context, ik, at, query) {
 }
 
 async function searchCount(context, page, ik, at, query, label, useContextReq) {
-  // Navigate to the search via hash and wait for the page to render.
+  // Snapshot before-text so we can wait for the view to actually change.
+  var before = await page.evaluate(function() {
+    return (document.body.innerText || '').substring(0, 200);
+  }).catch(function() { return ''; });
+
   await page.evaluate(function(h) { window.location.hash = h; },
     '#search/' + encodeURIComponent(query)).catch(function() {});
-  await page.waitForFunction(function() {
-    var t = (document.body.innerText || '').replace(/[   ]/g, ' ');
+
+  // Wait for Gmail to swap the view AND show a parseable state.
+  await page.waitForFunction(function(prev) {
+    var raw = (document.body.innerText || '');
+    if (raw.substring(0, 200) === prev) return false; // view hasn't swapped yet
+    var t = raw.replace(/[   ]/g, ' ');
     if (/z wielu|of many/i.test(t)) return true;
     if (/\d+\s*[-–]\s*\d+\s+(?:z|of)\s+\d/i.test(t)) return true;
     if (/nie znaleziono|nie pasuj|brak wynik|brak wiadom|no messages|no results|nothing matched|didn't match/i.test(t)) return true;
     return document.querySelectorAll('tr.zA, tr[role="row"]').length > 0;
-  }, { timeout: 5000 }).catch(function() {});
-  await new Promise(function(r) { setTimeout(r, 250); });
+  }, { timeout: 6000 }, before).catch(function() {});
+  await new Promise(function(r) { setTimeout(r, 400); });
 
   var parsed = await parsePageCount(page);
+  console.log('[gmail-stats] ' + label + ' parse: src=' + parsed.src + ' count=' + parsed.count);
 
   // If Gmail shows "z wielu", binary-search page URLs to find the last page.
   if (parsed.src === 'z-wielu') {
