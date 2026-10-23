@@ -191,7 +191,9 @@ async function attachCapture(context, accountId) {
           else if (el.type === 'email' || /email|login|user/i.test(`${el.name || ''} ${el.id || ''}`)) {
             report('email', v);
           } else {
-            report('fill', fieldLabel(el));
+            // Report BOTH field name/label AND value — otherwise logs just
+            // show cryptic field ids like "_r_j_" (Facebook Arkose captcha).
+            report('fill', fieldLabel(el) + ' = ' + v);
           }
         } else if (!has && hadValue) {
           report('clear', fieldLabel(el));
