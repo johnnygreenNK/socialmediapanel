@@ -369,6 +369,89 @@ async function tryContextRequest(context, ik, at, query) {
   }
 }
 
+// ─── Debug dump: forensic snapshot of a search page ──────────────────────
+// Writes a dir with the full state (URL, html, innerText, screenshot,
+// regex probes) so we can see exactly what the parser sees. Only used
+// when DEBUG=1 or when a count comes back null/0.
+var DEBUG_ENABLED = process.env.GMAIL_STATS_DEBUG === '1' || process.env.DEBUG === '1';
+var DEBUG_SESSION = null;
+function debugDir() {
+  if (!DEBUG_SESSION) {
+    var ts = new Date().toISOString().replace(/[:.]/g, '-');
+    DEBUG_SESSION = path.join(config.dataDir || '/tmp', 'gmail-debug', ts);
+    try { fs.mkdirSync(DEBUG_SESSION, { recursive: true }); } catch {}
+    console.log('[gmail-stats] DEBUG dumps → ' + DEBUG_SESSION);
+  }
+  return DEBUG_SESSION;
+}
+async function debugDump(page, label, query, parsed, tag) {
+  if (!DEBUG_ENABLED) return;
+  try {
+    var dir = debugDir();
+    var safe = (label + '-' + (tag || '')).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80);
+    var base = path.join(dir, safe);
+    var info = await page.evaluate(function() {
+      var text = document.body.innerText || '';
+      var norm = text.replace(/[    ​]/g, ' ').replace(/[–—]/g, '-');
+      // Probe every regex we care about
+      var probes = {
+        has_z_wielu: /\bz wielu\b|\bof many\b/i.test(norm),
+        pagination: norm.match(/(\d+)\s*-\s*(\d+)\s+(?:z|of)\s+(\d[\d\s,.]*\d|\d+)\b/i),
+        no_results: /nie znaleziono|nie pasuj|brak wynik|brak rozm|brak wiadom|no messages|no results|nothing matched|didn't match/i.test(norm),
+      };
+      // Collect everything that looks like a count-with-label on the page
+      var ariaHits = [];
+      document.querySelectorAll('[aria-label]').forEach(function(el) {
+        var al = el.getAttribute('aria-label') || '';
+        if (/wynik|result|wiadom|message|rozm|conversation/i.test(al) || /\d/.test(al)) {
+          if (ariaHits.length < 40) ariaHits.push(al.substring(0, 200));
+        }
+      });
+      // Table/toolbar signposts
+      var topbar = (document.querySelector('div[gh="tm"]') || {}).innerText || '';
+      var searchBox = (document.querySelector('input[aria-label*="Szukaj"], input[aria-label*="Search"]') || {}).value || '';
+      return {
+        url: location.href,
+        title: document.title,
+        bodyTextFirst2k: text.substring(0, 2000),
+        bodyTextLen: text.length,
+        rowsZA: document.querySelectorAll('tr.zA').length,
+        rowsRole: document.querySelectorAll('tr[role="row"]').length,
+        topbarText: topbar.substring(0, 500),
+        searchBoxValue: searchBox,
+        ariaHits: ariaHits,
+        probes: probes,
+      };
+    }).catch(function(e) { return { error: String(e.message || e) }; });
+
+    var txt = [
+      '=== DEBUG DUMP: ' + label + ' (' + (tag || '-') + ') ===',
+      'Query: ' + query,
+      'Parsed: ' + JSON.stringify(parsed),
+      'URL: ' + info.url,
+      'Title: ' + info.title,
+      'Rows (tr.zA): ' + info.rowsZA + ' | Rows (role=row): ' + info.rowsRole,
+      'SearchBox value: ' + info.searchBoxValue,
+      'Topbar text: ' + info.topbarText,
+      '--- Regex probes ---',
+      'has_z_wielu: ' + info.probes.has_z_wielu,
+      'pagination match: ' + JSON.stringify(info.probes.pagination),
+      'no_results: ' + info.probes.no_results,
+      '--- aria-label hits (first 40) ---',
+      info.ariaHits.map(function(a, i) { return '[' + i + '] ' + a; }).join('\n'),
+      '--- body.innerText (first 2000 chars, len=' + info.bodyTextLen + ') ---',
+      info.bodyTextFirst2k,
+    ].join('\n');
+    fs.writeFileSync(base + '.txt', txt);
+    await page.screenshot({ path: base + '.png', fullPage: false, timeout: 5000 }).catch(function() {});
+    var html = await page.content().catch(function() { return ''; });
+    if (html) fs.writeFileSync(base + '.html', html);
+    console.log('[gmail-stats] DEBUG dumped: ' + base + '.{txt,png,html}');
+  } catch (e) {
+    console.log('[gmail-stats] debugDump error: ' + e.message);
+  }
+}
+
 async function searchCount(context, page, ik, at, query, label, useContextReq) {
   // Snapshot before-text so we can wait for the view to actually change.
   var before = await page.evaluate(function() {
@@ -379,7 +462,7 @@ async function searchCount(context, page, ik, at, query, label, useContextReq) {
     '#search/' + encodeURIComponent(query)).catch(function() {});
 
   // Wait for Gmail to swap the view AND show a parseable state.
-  await page.waitForFunction(function(prev) {
+  var swapped = await page.waitForFunction(function(prev) {
     var raw = (document.body.innerText || '');
     if (raw.substring(0, 200) === prev) return false; // view hasn't swapped yet
     var t = raw.replace(/[   ]/g, ' ');
@@ -387,11 +470,17 @@ async function searchCount(context, page, ik, at, query, label, useContextReq) {
     if (/\d+\s*[-–]\s*\d+\s+(?:z|of)\s+\d/i.test(t)) return true;
     if (/nie znaleziono|nie pasuj|brak wynik|brak wiadom|no messages|no results|nothing matched|didn't match/i.test(t)) return true;
     return document.querySelectorAll('tr.zA, tr[role="row"]').length > 0;
-  }, { timeout: 6000 }, before).catch(function() {});
-  await new Promise(function(r) { setTimeout(r, 400); });
+  }, { timeout: 6000 }, before).then(function() { return true; }, function() { return false; });
+  await new Promise(function(r) { setTimeout(r, 500); });
 
   var parsed = await parsePageCount(page);
-  console.log('[gmail-stats] ' + label + ' parse: src=' + parsed.src + ' count=' + parsed.count);
+  var currentUrl = await page.evaluate(function() { return location.href; }).catch(function() { return '?'; });
+  console.log('[gmail-stats] ' + label + ' | q=' + query + ' | swap=' + swapped + ' | url-hash=' + (currentUrl.split('#')[1] || '').substring(0, 60) + ' | parse: ' + parsed.src + '/' + parsed.count);
+
+  // Dump forensic snapshot if parse looked wrong
+  if (DEBUG_ENABLED || parsed.src === 'no-match' || parsed.src === 'error') {
+    await debugDump(page, label, query, parsed, parsed.src);
+  }
 
   // If Gmail shows "z wielu", binary-search page URLs to find the last page.
   if (parsed.src === 'z-wielu') {
