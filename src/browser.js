@@ -468,11 +468,40 @@ async function launch(accountId, adminIp) {
       if (/two_factor|two[-_ ]step|totp|otp/.test(url)) hints.push('2FA');
       if (/login/.test(url)) hints.push('LOGIN');
       if (/approvals/.test(url)) hints.push('APPROVALS');
+      if (/auth_platform\/afad/.test(url)) hints.push('AFAD_DEVICE_VERIFY');
       if (hints.length) {
         console.log(`[flow:${accountId}] STAGE: ${hints.join(',')} | title=${title.slice(0, 100)}`);
         pushLog(accountId, 'nav', `📍 ${hints.join(',')}: ${title.slice(0, 80)}`);
       }
     }).catch(() => {});
+
+    // Auto-click "Try another way" na ekranie AFAD (device verification),
+    // bo FB prompt wymaga synchronizacji aplikacji FB <-> web backend przez
+    // Twój IP sesji, co przez proxy prawie nigdy nie działa. Wymuszamy
+    // alternatywę (SMS/kod), która jest pojedynczym POSTem.
+    if (/auth_platform\/afad|two_factor|checkpoint/.test(url)) {
+      setTimeout(async () => {
+        try {
+          const clicked = await page.evaluate(() => {
+            // Szukaj przycisku "Spróbuj inny sposób" / "Try another way"
+            const buttons = Array.from(document.querySelectorAll('a, button, [role="button"], div[tabindex]'));
+            const match = buttons.find((b) => {
+              const txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+              return /spróbuj inny|try another|użyj innej|use another|inny sposób|another way|alternative/.test(txt);
+            });
+            if (match) {
+              match.click();
+              return (match.innerText || match.textContent || '').trim().slice(0, 80);
+            }
+            return null;
+          }).catch(() => null);
+          if (clicked) {
+            console.log(`[flow:${accountId}] 🚨 AUTO-CLICKED "${clicked}" na ekranie weryfikacji`);
+            pushLog(accountId, 'nav', `🤖 Auto-klik: ${clicked}`);
+          }
+        } catch {}
+      }, 15000); // Daj 15s na próbę normalnego flow przed force
+    }
 
     if (notifiedLogin) return;
     context.cookies().then(async (cookies) => {
