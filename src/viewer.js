@@ -216,23 +216,56 @@ export default async function viewerRoutes(app) {
     let navDebounce = null;
     const navHandler = (frame) => {
       if (frame !== page.mainFrame()) return;
+      req.log.info({ accountId: resolvedId, url: frame.url() }, '[viewer] framenavigated');
+      browser.logActivity(resolvedId, 'nav', `URL: ${frame.url()}`);
       clearTimeout(navDebounce);
       navDebounce = setTimeout(() => {
         enqueueArm(async () => {
           try {
             await armScreencast(currentSize.width, currentSize.height);
+            req.log.info({ accountId: resolvedId }, '[viewer] screencast re-armed after nav');
           } catch {
             try {
               await rebindSession();
               await armScreencast(currentSize.width, currentSize.height);
+              req.log.info({ accountId: resolvedId }, '[viewer] screencast re-armed after rebind');
             } catch {
-              /* socket is likely closing (session_not_running) by now */
+              req.log.warn({ accountId: resolvedId }, '[viewer] screencast re-arm FAILED after rebind');
             }
           }
         });
       }, 200);
     };
     page.on('framenavigated', navHandler);
+
+    // Dodatkowe logi diagnostyczne: wszystkie page errors, request failures
+    // (np. zablokowane przez proxy albo nasz blocker) i konsola przeglądarki.
+    page.on('pageerror', (err) => {
+      req.log.warn({ accountId: resolvedId, err: String(err?.message || err).slice(0, 300) }, '[viewer] page JS error');
+    });
+    page.on('requestfailed', (req2) => {
+      const failure = req2.failure();
+      if (!failure) return;
+      // Pomiń oczywisty aborted (route.abort) żeby nie zasypywać logów
+      if (/net::ERR_ABORTED|net::ERR_BLOCKED_BY_CLIENT/.test(failure.errorText || '')) return;
+      req.log.warn({
+        accountId: resolvedId,
+        url: req2.url().slice(0, 200),
+        err: failure.errorText,
+        method: req2.method(),
+      }, '[viewer] request FAILED');
+    });
+    page.on('response', (res) => {
+      const status = res.status();
+      // Loguj TYLKO błędy i 3xx/4xx które mogą wskazywać blokadę
+      if (status >= 400) {
+        req.log.info({
+          accountId: resolvedId,
+          status,
+          url: res.url().slice(0, 200),
+        }, '[viewer] HTTP error response');
+      }
+    });
 
     // Chromium's CDP screencast only emits a frame when the compositor
     // actually REPAINTS. Facebook's 2FA screens often swap via React

