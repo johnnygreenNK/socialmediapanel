@@ -19,6 +19,33 @@ function labelToId(s) {
   return s.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
 }
 
+/* ── Toast notifications ── */
+function toast(message, kind = 'success', duration = 4000) {
+  let container = document.getElementById('toastContainer');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toastContainer';
+    document.body.appendChild(container);
+  }
+  const el = document.createElement('div');
+  el.className = `toast toast-${kind}`;
+  const icon = document.createElement('div');
+  icon.className = 'toast-icon';
+  icon.textContent = kind === 'success' ? '✓' : (kind === 'error' ? '!' : 'ℹ');
+  const text = document.createElement('div');
+  text.className = 'toast-text';
+  text.textContent = message;
+  el.append(icon, text);
+  container.appendChild(el);
+  // Trigger CSS enter animation
+  requestAnimationFrame(() => el.classList.add('toast-in'));
+  setTimeout(() => {
+    el.classList.remove('toast-in');
+    el.classList.add('toast-out');
+    setTimeout(() => el.remove(), 300);
+  }, duration);
+}
+
 /* ── Tab switching ── */
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -97,22 +124,48 @@ async function renderGenerateTab() {
 document.querySelectorAll('.plat-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const name = $('#addName').value.trim();
-    if (!name) { $('#addName').focus(); $('#addName').style.borderColor = 'var(--red)'; return; }
+    if (!name) {
+      $('#addName').focus();
+      $('#addName').style.borderColor = 'var(--red)';
+      toast('Wpisz imię / nazwę przed wyborem platformy', 'error');
+      return;
+    }
     $('#addName').style.borderColor = '';
     const id = labelToId(`${name}-${btn.dataset.platform}`);
-    if (!id) { alert('Nazwa zawiera niedozwolone znaki.'); return; }
+    if (!id) { toast('Nazwa zawiera niedozwolone znaki', 'error'); return; }
     const platLabel = btn.querySelector('span:not(.plat-icon)')?.textContent.trim() || btn.dataset.platform;
     const proxyUrl = $('#addProxy').value.trim();
     const body = { id, label: `${name} – ${platLabel}`, startUrl: btn.dataset.url };
     if (proxyUrl) body.proxyUrl = proxyUrl;
-    const res = await api('/api/accounts', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) { const e = await res.json().catch(()=>({})); alert('Błąd: '+(e.error||res.status)); return; }
-    $('#addName').value = '';
-    $('#addProxy').value = '';
-    renderGenerateTab();
+
+    // Disable button during request to prevent double-click
+    btn.disabled = true;
+    const originalText = btn.innerHTML;
+    btn.style.opacity = '0.5';
+
+    try {
+      const res = await api('/api/accounts', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        const errMap = {
+          invalid_proxy_url: 'Nieprawidłowy format proxy. Użyj: socks5://user:pass@host:port lub http://user:pass@host:port',
+        };
+        toast(errMap[e.error] || `Błąd: ${e.error || res.status}`, 'error', 6000);
+        return;
+      }
+      toast(`Konto "${name} – ${platLabel}" utworzone pomyślnie!`, 'success');
+      $('#addName').value = '';
+      $('#addProxy').value = '';
+      renderGenerateTab();
+    } catch (err) {
+      toast(`Błąd połączenia: ${err.message}`, 'error', 6000);
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = '';
+    }
   });
 });
 
