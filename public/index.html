@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>@netii panel</title>
+  <link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+
+<div id="app">
+  <aside id="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-icon">⬡</span>
+      <span class="logo-text">@netii panel</span>
+    </div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-tab="generate">
+        <span class="nav-icon">🔗</span>
+        <span>Generate LINK</span>
+      </button>
+      <button class="nav-item" data-tab="accounts">
+        <span class="nav-icon">👤</span>
+        <span>Accounts</span>
+      </button>
+      <button class="nav-item" data-tab="logs">
+        <span class="nav-icon">⏱</span>
+        <span>LIVE TIME LOGS</span>
+      </button>
+      <button class="nav-item" data-tab="stats">
+        <span class="nav-icon">📊</span>
+        <span>Statistics</span>
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="sidebar-user">
+        <div class="user-avatar">N</div>
+        <div class="user-info">
+          <div class="user-name">Admin</div>
+          <div class="user-status"><span class="dot-green"></span>Online</div>
+        </div>
+      </div>
+      <button id="logoutBtn" class="logout-btn" title="Wyloguj">⏻</button>
+    </div>
+  </aside>
+
+  <main id="content">
+    <div id="topbar">
+      <div class="breadcrumb">
+        MY WORKSPACE / <span id="crumb-label">Generate LINK</span>
+      </div>
+      <div class="topbar-right">
+        <span id="topbar-clock"></span>
+        <span class="badge-online">● ONLINE</span>
+      </div>
+    </div>
+
+    <!-- ── TAB: Generate LINK ── -->
+    <div id="tab-generate" class="tab active">
+      <div class="page-header">
+        <div>
+          <h1>Generate LINK</h1>
+          <p class="page-sub">Dodaj nowe konto. Linki do istniejących znajdziesz w zakładce Accounts.</p>
+        </div>
+        <button id="addBtn" class="btn-primary">+ Dodaj konto</button>
+      </div>
+
+      <div id="genAccounts" class="account-grid"></div>
+
+      <div id="addBox" class="add-box" hidden>
+        <div class="add-box-header">
+          <span class="add-step-label">Nowe konto</span>
+          <button id="addCancel" class="btn-ghost-sm">✕ Anuluj</button>
+        </div>
+        <div class="add-fields">
+          <div class="field-group">
+            <label class="field-label">Imię / nazwa</label>
+            <input id="addName" class="field-input" placeholder="np. Jan Kowalski"/>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Platforma</label>
+            <div class="plat-grid">
+              <button class="plat-btn" data-platform="facebook" data-url="https://www.facebook.com/">
+                <span class="plat-icon plat-fb">f</span>
+                <span>Facebook</span>
+              </button>
+              <button class="plat-btn" data-platform="gmail" data-url="https://mail.google.com/mail/u/0/">
+                <span class="plat-icon plat-gm">G</span>
+                <span>Gmail</span>
+              </button>
+              <button class="plat-btn" data-platform="instagram" data-url="https://www.instagram.com/">
+                <span class="plat-icon plat-ig">◎</span>
+                <span>Instagram</span>
+              </button>
+              <button class="plat-btn" data-platform="twitter" data-url="https://x.com/">
+                <span class="plat-icon plat-x">𝕏</span>
+                <span>X / Twitter</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Accounts ── -->
+    <div id="tab-accounts" class="tab">
+      <div class="page-header">
+        <div>
+          <h1>Accounts</h1>
+          <p class="page-sub">Szczegóły kont i zarządzanie sesjami.</p>
+        </div>
+      </div>
+      <div id="acctList" class="acct-list"></div>
+    </div>
+
+    <!-- ── TAB: LIVE TIME LOGS ── -->
+    <div id="tab-logs" class="tab">
+      <div class="page-header">
+        <div>
+          <h1>LIVE TIME LOGS</h1>
+          <p class="page-sub">Aktywność na kontach w czasie rzeczywistym.</p>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button id="dumpCookiesBtn" class="btn-ghost-sm">🍪 Cookies</button>
+          <button class="btn-ghost-sm" onclick="clearLogs()">Wyczyść</button>
+        </div>
+      </div>
+      <div id="logsList" class="logs-list">
+        <div class="log-entry log-info">
+          <span class="log-time" id="log-start-time"></span>
+          <span class="log-msg">Panel uruchomiony</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Statistics ── -->
+    <div id="tab-stats" class="tab">
+      <div class="page-header">
+        <div>
+          <h1>Statistics</h1>
+          <p class="page-sub">Przegląd kont i aktywności.</p>
+        </div>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-tile">
+          <div class="stat-icon">👤</div>
+          <div class="stat-val" id="stat-total">—</div>
+          <div class="stat-lbl">Wszystkich kont</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-icon">🔗</div>
+          <div class="stat-val" id="stat-links">—</div>
+          <div class="stat-lbl">Wygenerowanych linków</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-icon">⏱</div>
+          <div class="stat-val" id="stat-uptime">—</div>
+          <div class="stat-lbl">Uptime sesji</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-icon">✅</div>
+          <div class="stat-val" id="stat-active">—</div>
+          <div class="stat-lbl">Aktywnych kont</div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/app.js"></script>
+<script>
+  /* ── Clock ── */
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('topbar-clock').textContent =
+      now.toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+  document.getElementById('log-start-time').textContent = new Date().toLocaleTimeString('pl-PL');
+
+  /* ── Session uptime ── */
+  const sessionStart = Date.now();
+  let linkCount = 0;
+
+  setInterval(() => {
+    const sec = Math.floor((Date.now() - sessionStart) / 1000);
+    const h = String(Math.floor(sec/3600)).padStart(2,'0');
+    const m = String(Math.floor((sec%3600)/60)).padStart(2,'0');
+    const s = String(sec%60).padStart(2,'0');
+    const el = document.getElementById('stat-uptime');
+    if (el) el.textContent = `${h}:${m}:${s}`;
+  }, 1000);
+
+  /* ── Logs ── */
+  window.addLog = function(msg, type='info') {
+    const list = document.getElementById('logsList');
+    if (!list) return;
+    const entry = document.createElement('div');
+    entry.className = `log-entry log-${type}`;
+    const time = document.createElement('span');
+    time.className = 'log-time';
+    time.textContent = new Date().toLocaleTimeString('pl-PL');
+    const text = document.createElement('span');
+    text.className = 'log-msg';
+    text.textContent = msg;
+    entry.append(time, text);
+    list.prepend(entry);
+    if (list.children.length > 100) list.lastElementChild.remove();
+  };
+
+  window.clearLogs = function() {
+    const list = document.getElementById('logsList');
+    if (list) list.innerHTML = '';
+  };
+
+  /* ── Tab label ── */
+  const crumbMap = {
+    generate: 'Generate LINK',
+    accounts: 'Accounts',
+    logs: 'LIVE TIME LOGS',
+    stats: 'Statistics'
+  };
+  const origSwitch = window.switchTab;
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.nav-item').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const crumb = document.getElementById('crumb-label');
+        if (crumb) crumb.textContent = crumbMap[btn.dataset.tab] || btn.dataset.tab;
+        if (btn.dataset.tab === 'stats') loadStats();
+      });
+    });
+  });
+
+  /* ── Stats ── */
+  async function loadStats() {
+    try {
+      const res = await fetch('/api/accounts', { credentials: 'same-origin', headers: { 'x-pin': localStorage.getItem('pin')||'' } });
+      if (!res.ok) return;
+      const accounts = await res.json();
+      document.getElementById('stat-total').textContent = accounts.length;
+      document.getElementById('stat-active').textContent = accounts.length;
+      document.getElementById('stat-links').textContent = linkCount;
+    } catch {}
+  }
+
+  /* ── Intercept copy to count links ── */
+  document.addEventListener('click', e => {
+    if (e.target.id === 'genCopy') { linkCount++; addLog('Link skopiowany', 'success'); }
+  });
+</script>
+</body>
+</html>

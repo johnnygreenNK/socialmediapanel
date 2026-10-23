@@ -1,0 +1,10 @@
+# Replace panel.example.com with your domain. Caddy fetches/renews TLS certs
+# automatically. For a Tailscale-only setup you can use your MagicDNS name.
+#
+# Local test without a domain: replace the whole block with ":80" and set
+# COOKIE_SECURE=false in .env.
+
+panel.example.com {
+	encode zstd gzip
+	reverse_proxy backend:8080
+}

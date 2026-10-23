@@ -1,0 +1,20 @@
+{
+  "name": "social-panel-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted backend: persistent remote-browser sessions for your own social accounts, behind a PIN.",
+  "scripts": {
+    "dev": "node --env-file=.env --watch src/server.js",
+    "start": "node --env-file=.env src/server.js"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.6",
+    "@fastify/websocket": "^11.0.2",
+    "fastify": "^5.2.1",
+    "playwright": "^1.50.1"
+  }
+}

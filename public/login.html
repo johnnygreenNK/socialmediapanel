@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Panel — logowanie</title>
+  <link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-logo">⬡</div>
+    <h1>Social Panel</h1>
+    <p class="login-sub">Wprowadź PIN aby kontynuować</p>
+    <form id="loginForm">
+      <input id="pinInput" type="password" placeholder="PIN" autocomplete="current-password" autofocus/>
+      <button type="submit">Zaloguj się</button>
+      <p id="pinError">Nieprawidłowy PIN</p>
+    </form>
+  </div>
+</div>
+
+<script src="/login.js"></script>
+</body>
+</html>

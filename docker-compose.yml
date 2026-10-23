@@ -1,0 +1,36 @@
+# Local-first stack: backend + Caddy (automatic HTTPS / reverse proxy).
+# For local http testing you can hit the backend directly on :8080 and set
+# COOKIE_SECURE=false in .env. For real use, put it behind Caddy + a domain,
+# or behind Tailscale / Cloudflare Tunnel.
+
+services:
+  backend:
+    build: .
+    env_file: .env
+    volumes:
+      - profiles:/data
+    restart: unless-stopped
+    # Not published directly in the HTTPS setup; Caddy proxies to it.
+    expose:
+      - "8080"
+    # For bare local testing, comment out Caddy below and use:
+    # ports:
+    #   - "8080:8080"
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  profiles:
+  caddy_data:
+  caddy_config:

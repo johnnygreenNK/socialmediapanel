@@ -1,0 +1,37 @@
+# Cloudflare Tunnel config — replace <TUNNEL_ID> and your domain.
+#
+# Setup (one-time):
+#   1. cloudflared tunnel login
+#   2. cloudflared tunnel create social-panel
+#      → saves credentials to ~/.cloudflared/<TUNNEL_ID>.json
+#   3. cloudflared tunnel route dns social-panel panel.yourdomain.com
+#   4. Fill in tunnel: <TUNNEL_ID> below
+#
+# Run:
+#   cloudflared tunnel --config cloudflared.yml run
+#
+# Or add to docker-compose.yml (see comment at bottom of this file).
+
+tunnel: <TUNNEL_ID>
+credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: panel.yourdomain.com
+    service: http://127.0.0.1:8080
+  - service: http_status:404
+
+# ── Docker Compose snippet ──────────────────────────────────────────────────
+# Add this service to docker-compose.yml (remove the "expose" on backend and
+# keep it NOT published directly):
+#
+#   cloudflared:
+#     image: cloudflare/cloudflared:latest
+#     command: tunnel --no-autoupdate run
+#     environment:
+#       - TUNNEL_TOKEN=<your-tunnel-token>   # from: cloudflared tunnel token <name>
+#     depends_on:
+#       - backend
+#     restart: unless-stopped
+#
+# With TUNNEL_TOKEN the credentials-file above is not needed — the token
+# embeds everything. Use one or the other, not both.
