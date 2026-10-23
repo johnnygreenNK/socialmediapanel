@@ -108,12 +108,26 @@ async function launch(accountId, adminIp) {
       `--window-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
       `--ozone-override-screen-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
       // Chrome's "Secure DNS" (DNS-over-HTTPS) connects straight to
-      // 8.8.8.8/8.8.4.4 over HTTPS, bypassing --proxy-server entirely — we
-      // saw this live (direct connections to Google's DoH resolvers from
-      // the server's own IP, not through the proxy). If those hang, so does
-      // the whole page load, no matter which proxy is configured. Force
-      // plain DNS instead.
+      // 8.8.8.8/8.8.4.4 over HTTPS, bypassing --proxy-server entirely.
+      // Force plain DNS instead.
       '--disable-features=DnsOverHttps',
+
+      // ─── Perf flags for high-latency links (mobile proxy) ───────
+      // HTTP/3 (QUIC): 0-RTT connection reuse, znacznie szybszy niż HTTP/2
+      // przez wysokie RTT. Facebook, Google i Instagram wspierają QUIC natively.
+      '--enable-quic',
+      '--origin-to-force-quic-on=www.facebook.com:443,facebook.com:443,static.xx.fbcdn.net:443,scontent.xx.fbcdn.net:443,www.instagram.com:443,instagram.com:443,mail.google.com:443,accounts.google.com:443',
+      // Nie dławiaj background requestów — chcemy max throughput
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-ipc-flooding-protection',
+      // Agresywny cache: ponowne otwarcie strony idzie z lokalnego cache
+      '--disk-cache-size=104857600', // 100 MB cache zamiast domyślnych 20 MB
+      // Preconnect do znanych domen (Chrome robi to agresywnie)
+      '--enable-features=NetworkServiceInProcess2',
+      // Wyłącz niepotrzebne UI
+      '--disable-features=TranslateUI,BlinkGenPropertyTrees,InterestFeedContentSuggestions',
     ],
     ignoreDefaultArgs: ['--enable-automation'],
     // Per-account opt-out: confirmed live that this proxy's own anti-abuse
@@ -567,6 +581,24 @@ async function launch(accountId, adminIp) {
   const navigate = async () => {
     await page.goto(account.startUrl, { waitUntil: 'commit', timeout: navTimeout });
     await page.waitForLoadState(loadWaitUntil, { timeout: navTimeout });
+
+    // Pre-connect / pre-fetch CDN domen żeby TLS handshake był gotowy
+    // ZANIM user kliknie cokolwiek. Każdy fbcdn ma własny TLS session który
+    // musiałby być negocjowany przy pierwszym kliku (300-800ms przez proxy).
+    // Robimy to po załadowaniu strony głównej.
+    await page.evaluate((domains) => {
+      domains.forEach((d) => {
+        const l1 = document.createElement('link');
+        l1.rel = 'preconnect'; l1.href = d; l1.crossOrigin = 'anonymous';
+        document.head.appendChild(l1);
+        const l2 = document.createElement('link');
+        l2.rel = 'dns-prefetch'; l2.href = d;
+        document.head.appendChild(l2);
+      });
+    }, isFb
+      ? ['https://static.xx.fbcdn.net', 'https://scontent.xx.fbcdn.net', 'https://www.facebook.com', 'https://edge-chat.facebook.com']
+      : ['https://ssl.gstatic.com', 'https://accounts.google.com', 'https://mail.google.com']
+    ).catch(() => {});
   };
   (async () => {
     const maxAttempts = 3;
