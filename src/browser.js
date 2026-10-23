@@ -343,6 +343,47 @@ async function launch(accountId, adminIp) {
   });
 
   const page = context.pages()[0] || (await context.newPage());
+
+  // Block heavyweight tracking / analytics requests. Facebook, Instagram
+  // and Google each ship megabytes of pixels, A/B-test loggers and ad
+  // beacons that we don't need for a login flow — stripping them makes
+  // the page interactive 3-5x faster, especially over mobile proxies
+  // where every extra round-trip hurts.
+  await context.route('**/*', (route) => {
+    const url = route.request().url();
+    const blocked = [
+      // Facebook / Meta tracking
+      /facebook\.com\/tr(\/|\?|$)/,          // Facebook Pixel (tracking)
+      /facebook\.com\/plugins\//,             // social plugins
+      /facebook\.com\/.*\/ajax\/bz/,          // event logging
+      /facebook\.com\/.*\/qpl\//,             // quick perf logger
+      /facebook\.com\/.*\/mapbox/,            // maps for ads
+      /connect\.facebook\.net/,               // SDK dla third-parties
+      /\.facebook\.com\/log\/|falco\.facebook/,
+      // Instagram
+      /instagram\.com\/.*\/logging/,
+      // Google tracking (nie Gmail — tylko telemetria)
+      /google-analytics\.com/,
+      /googletagmanager\.com/,
+      /doubleclick\.net/,
+      /googlesyndication\.com/,
+      /googleadservices\.com/,
+      // Twitter/X tracking
+      /\/i\/jot\//,                           // X analytics endpoint
+      // Common third-party trackers
+      /segment\.(io|com)/,
+      /mixpanel\.com/,
+      /amplitude\.com/,
+      /hotjar\.com/,
+      /sentry\.io/,
+      /fullstory\.com/,
+    ];
+    if (blocked.some((rx) => rx.test(url))) {
+      return route.abort();
+    }
+    return route.continue();
+  }).catch(() => {});
+
   // Presence of one of these session cookies is a reliable, platform-level
   // signal that the account is actually logged in (far more robust than
   // guessing from the URL or page title) — fires the Telegram notification
