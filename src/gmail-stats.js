@@ -175,60 +175,72 @@ async function interceptGmailData(page, query, label) {
   });
 }
 
-// Strategy 2: Parse the visible page text for count information
-async function parsePageCount(page, label) {
+// Strategy 2: Parse the visible page text for count information.
+// Returns one of:
+//   { count: <num>, src: 'pagination' }   — exact "N-M z TOTAL"
+//   { count: 0,     src: 'no-results'|'no-rows' } — empty category
+//   { count: <num>, src: 'row-count' }    — <50 results, counted rows
+//   { count: null,  src: 'z-wielu' }      — >50, caller must jump to last page
+//   { count: null,  src: 'no-match'|'error' }
+async function parsePageCount(page) {
   return page.evaluate(function() {
     var text = document.body.innerText || '';
-    // Normalize whitespace and dashes
-    var norm = text.replace(/[   ​]/g, ' ').replace(/[–—]/g, '-');
+    // Normalize unicode whitespace (NBSP, thin space, zero-width) and dashes.
+    var norm = text.replace(/[    ​]/g, ' ').replace(/[–—]/g, '-');
 
-    // "No results" patterns (PL + EN)
-    if (/nie pasuj|brak wynik|brak rozm|no results|nothing matched/i.test(norm)) {
+    // "z wielu" / "of many" — >50 results. Return early BEFORE trying the
+    // pagination regex, because that regex would match the literal word
+    // "wielu" lookahead-free in some locales.
+    if (/\bz wielu\b|\bof many\b/i.test(norm)) return { count: null, src: 'z-wielu' };
+
+    // Exact pagination: "1-50 z 1234" / "51-100 of 1,234" / "1151-1187 z 1187".
+    // Rejects "z wielu" by requiring the group to be purely digits/separators.
+    var pm = norm.match(/(\d+)\s*-\s*(\d+)\s+(?:z|of)\s+(\d[\d\s,.]*\d|\d+)\b/i);
+    if (pm) {
+      var t = parseInt(pm[3].replace(/[\s,.]/g, ''), 10);
+      if (!isNaN(t) && t >= 1) return { count: t, src: 'pagination' };
+    }
+
+    // No-results patterns (PL + EN, broad to catch empty categories like Fora)
+    if (/nie znaleziono|nie pasuj|brak wynik|brak rozm|brak wiadom|no messages|no results|nothing matched|didn't match/i.test(norm)) {
       return { count: 0, src: 'no-results' };
     }
 
-    // Pagination pattern: "1-50 z 1234" or "1-50 of 1,234" or "1–50 z 1 234"
-    var patterns = [
-      /(\d+)\s*[-–]\s*(\d+)\s+(?:z|of)\s+([\d\s,.]+\d)/,
-      /(\d+)\s*[-–]\s*(\d+)\s+(?:z|of)\s+(?:wielu|many|approximately)\s+([\d\s,.]+\d)/,
-    ];
-    for (var i = 0; i < patterns.length; i++) {
-      var m = norm.match(patterns[i]);
-      if (m) {
-        var t = parseInt(m[3].replace(/[\s,.]/g, ''));
-        if (!isNaN(t) && t >= 1) return { count: t, src: 'pagination' };
-      }
+    // <50 results, no pagination shown — count visible rows
+    var rows = document.querySelectorAll('tr.zA, tr[role="row"]');
+    if (rows.length > 0 && rows.length < 50) {
+      return { count: rows.length, src: 'row-count' };
     }
-
-    // "z wielu" / "of many" — means >50 results, try to count visible rows
-    if (/z wielu|of many/i.test(norm)) {
-      // Count visible email rows — Gmail renders ~50 per page
-      var rows = document.querySelectorAll('tr.zA, tr[role="row"], div.Cp tr');
-      if (rows.length > 0) return { count: rows.length, src: 'z-wielu-rows', approx: true };
-      return { count: 50, src: 'z-wielu-min', approx: true };
-    }
-
-    // Single result page — might just show messages without pagination
-    // Try counting visible email rows
-    var emailRows = document.querySelectorAll('tr.zA, tr[role="row"]');
-    if (emailRows.length > 0 && emailRows.length < 50) {
-      return { count: emailRows.length, src: 'row-count' };
-    }
-
-    // aria-label on search bar or result area sometimes contains count
-    var ariaEls = document.querySelectorAll('[aria-label*="wynik"], [aria-label*="result"]');
-    for (var j = 0; j < ariaEls.length; j++) {
-      var label = ariaEls[j].getAttribute('aria-label');
-      var am = label.match(/(\d[\d\s,.]*\d|\d+)\s+(?:wynik|result)/i);
-      if (am) {
-        var av = parseInt(am[1].replace(/[\s,.]/g, ''));
-        if (!isNaN(av)) return { count: av, src: 'aria' };
-      }
+    if (rows.length === 0) {
+      return { count: 0, src: 'no-rows' };
     }
 
     return { count: null, src: 'no-match' };
   }).catch(function() { return { count: null, src: 'error' }; });
 }
+
+// Strategy 2b: Jump to the last page via the "Oldest" button so Gmail
+// shows the exact total ("1151-1187 z 1187"). The button lives in Gmail's
+// pagination toolbar (div[gh="tm"]).
+async function jumpToLastPage(page) {
+  var clicked = await page.evaluate(function() {
+    // Pagination toolbar contains Newest, Newer, Older, Oldest.
+    // We want "Oldest" / "Najstarsze" (double-arrow, aria-label on the <div>).
+    var all = document.querySelectorAll('div[gh="tm"] [aria-label], div[role="toolbar"] [aria-label]');
+    for (var i = 0; i < all.length; i++) {
+      var al = (all[i].getAttribute('aria-label') || '').toLowerCase();
+      // "Najstarsze" (PL) or "Oldest" (EN). Must NOT match plain "Starsze"/"Older".
+      var isOldest = /najstarsz/.test(al) || /\boldest\b/.test(al);
+      if (!isOldest) continue;
+      if (all[i].getAttribute('aria-disabled') === 'true') return 'disabled';
+      all[i].click();
+      return 'clicked';
+    }
+    return 'not-found';
+  }).catch(function() { return 'error'; });
+  return clicked;
+}
+
 
 // Strategy 3: Use context.request to call Gmail's internal API
 async function tryContextRequest(context, ik, at, query) {
@@ -260,7 +272,8 @@ async function tryContextRequest(context, ik, at, query) {
 }
 
 async function searchCount(context, page, ik, at, query, label, useContextReq) {
-  // Try context.request API first (fastest, no DOM)
+  // Try context.request API first (fastest, no DOM) — skipped once we know
+  // Gmail's internal view=tl endpoint returns HTML (dead on current Gmail).
   if (useContextReq) {
     var apiCount = await tryContextRequest(context, ik, at, query);
     if (apiCount !== null) {
@@ -269,17 +282,44 @@ async function searchCount(context, page, ik, at, query, label, useContextReq) {
     }
   }
 
-  // Try intercepting XHR responses during navigation
+  // Try intercepting XHR responses during navigation to the search
   var interceptResult = await interceptGmailData(page, query, label);
   if (interceptResult !== null) {
     console.log('[gmail-stats] ' + label + ': ' + interceptResult + ' (intercept)');
     return interceptResult;
   }
 
-  // Wait for page to settle and parse visible text
-  await new Promise(function(r) { setTimeout(r, 2000); });
-  var parsed = await parsePageCount(page, label);
-  console.log('[gmail-stats] ' + label + ': ' + parsed.count + ' (SPA ' + parsed.src + (parsed.approx ? ' ~approx' : '') + ')');
+  // Make sure we're on the right search page even if intercept gave up.
+  // The hash change is cheap and idempotent.
+  await page.evaluate(function(h) { window.location.hash = h; },
+    '#search/' + encodeURIComponent(query)).catch(function() {});
+  await new Promise(function(r) { setTimeout(r, 2500); });
+
+  var parsed = await parsePageCount(page);
+
+  // If Gmail shows "z wielu", jump to the last page to get the exact count.
+  if (parsed.src === 'z-wielu') {
+    var jump = await jumpToLastPage(page);
+    console.log('[gmail-stats] ' + label + ': z-wielu → jump=' + jump);
+    if (jump === 'clicked') {
+      // Wait for pagination text to settle on an exact "N-M z M"
+      var deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        await new Promise(function(r) { setTimeout(r, 500); });
+        var p2 = await parsePageCount(page);
+        if (p2.src === 'pagination') {
+          console.log('[gmail-stats] ' + label + ': ' + p2.count + ' (SPA jump-pagination)');
+          return p2.count;
+        }
+      }
+      // Give up on jump — report what we have
+      var pFinal = await parsePageCount(page);
+      console.log('[gmail-stats] ' + label + ': ' + pFinal.count + ' (SPA jump-timeout ' + pFinal.src + ')');
+      return pFinal.count;
+    }
+  }
+
+  console.log('[gmail-stats] ' + label + ': ' + parsed.count + ' (SPA ' + parsed.src + ')');
   return parsed.count;
 }
 
