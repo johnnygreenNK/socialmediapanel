@@ -20,8 +20,9 @@ var SEARCH_WAIT = 5000;
 // of a precise number, to keep the whole collection fast. 2500 = 50 pages.
 var MAX_EXACT = 2500;
 // How many Gmail tabs run in parallel. 4 tabs → Gmail's cross-tab sync
-// (BroadcastChannel) causes views to clobber each other. 2 works reliably.
-var CONCURRENCY = 2;
+// (BroadcastChannel) causes views to clobber each other. 3 works reliably
+// after we added auto-retry + warm-up.
+var CONCURRENCY = 3;
 
 var DEFAULT_SEARCHES = [
   { key: 'inbox',       query: 'in:inbox',             label: 'Skrzynka odbiorcza' },
@@ -452,8 +453,9 @@ async function debugDump(page, label, query, parsed, tag) {
   }
 }
 
-async function searchCount(context, page, ik, at, query, label, useContextReq) {
-  // Snapshot before-text so we can wait for the view to actually change.
+// Core: navigate to a search and parse the result page. Retries on
+// "no-match" (race condition: view hadn't finished loading yet).
+async function navigateAndParse(page, query, label, attempt) {
   var before = await page.evaluate(function() {
     return (document.body.innerText || '').substring(0, 200);
   }).catch(function() { return ''; });
@@ -461,23 +463,40 @@ async function searchCount(context, page, ik, at, query, label, useContextReq) {
   await page.evaluate(function(h) { window.location.hash = h; },
     '#search/' + encodeURIComponent(query)).catch(function() {});
 
-  // Wait for Gmail to swap the view AND show a parseable state.
   var swapped = await page.waitForFunction(function(prev) {
     var raw = (document.body.innerText || '');
-    if (raw.substring(0, 200) === prev) return false; // view hasn't swapped yet
+    if (raw.substring(0, 200) === prev) return false;
     var t = raw.replace(/[   ]/g, ' ');
     if (/z wielu|of many/i.test(t)) return true;
     if (/\d+\s*[-–]\s*\d+\s+(?:z|of)\s+\d/i.test(t)) return true;
     if (/nie znaleziono|nie pasuj|brak wynik|brak wiadom|no messages|no results|nothing matched|didn't match/i.test(t)) return true;
     return document.querySelectorAll('tr.zA, tr[role="row"]').length > 0;
   }, { timeout: 6000 }, before).then(function() { return true; }, function() { return false; });
-  await new Promise(function(r) { setTimeout(r, 500); });
+  // Longer settle on retry — give Gmail time to finish loading
+  await new Promise(function(r) { setTimeout(r, attempt > 0 ? 1500 : 500); });
 
   var parsed = await parsePageCount(page);
   var currentUrl = await page.evaluate(function() { return location.href; }).catch(function() { return '?'; });
-  console.log('[gmail-stats] ' + label + ' | q=' + query + ' | swap=' + swapped + ' | url-hash=' + (currentUrl.split('#')[1] || '').substring(0, 60) + ' | parse: ' + parsed.src + '/' + parsed.count);
+  console.log('[gmail-stats] ' + label + ' | q=' + query + ' | try=' + attempt + ' | swap=' + swapped + ' | url-hash=' + (currentUrl.split('#')[1] || '').substring(0, 60) + ' | parse: ' + parsed.src + '/' + parsed.count);
+  return parsed;
+}
 
-  // Dump forensic snapshot if parse looked wrong
+async function searchCount(context, page, ik, at, query, label, useContextReq) {
+  var parsed = await navigateAndParse(page, query, label, 0);
+
+  // Retry up to 2x on no-match / error (Gmail wasn't ready; happens on
+  // first query per tab and on long/complex OR queries that render slower)
+  var retries = 0;
+  while ((parsed.src === 'no-match' || parsed.src === 'error') && retries < 2) {
+    retries++;
+    console.log('[gmail-stats] ' + label + ' RETRY ' + retries + ' (parse was ' + parsed.src + ')');
+    // Reset the view first so the next navigation definitely re-renders
+    await page.evaluate(function() { window.location.hash = '#inbox'; }).catch(function() {});
+    await new Promise(function(r) { setTimeout(r, 800); });
+    parsed = await navigateAndParse(page, query, label, retries);
+  }
+
+  // Dump forensic snapshot if parse looked wrong even after retries
   if (DEBUG_ENABLED || parsed.src === 'no-match' || parsed.src === 'error') {
     await debugDump(page, label, query, parsed, parsed.src);
   }
@@ -530,7 +549,28 @@ async function collectViaSPA(context, onProgress) {
     Array.from({ length: extraCount }, function() { return openGmailTab(context); })
   );
   var tabs = [primary].concat(extras);
-  console.log('[gmail-stats] ' + tabs.length + ' tabs ready');
+  console.log('[gmail-stats] ' + tabs.length + ' tabs ready, warming up...');
+
+  // Warm-up: each tab performs a throwaway search so Gmail's SPA router,
+  // XHR cache and view scaffolding are initialized BEFORE the real queries
+  // start. Without this, the first search on each tab reliably races and
+  // returns no-match. Done in parallel across tabs.
+  await Promise.all(tabs.map(async function(page, idx) {
+    try {
+      await page.evaluate(function() { window.location.hash = '#search/in%3Ainbox'; });
+      await page.waitForFunction(function() {
+        var t = (document.body.innerText || '');
+        return /z wielu|of many/i.test(t) ||
+               /\d+\s*[-–]\s*\d+\s+(?:z|of)\s+\d/i.test(t) ||
+               /nie znaleziono|brak wynik|no results/i.test(t) ||
+               document.querySelectorAll('tr.zA, tr[role="row"]').length > 0;
+      }, { timeout: 8000 });
+      await new Promise(function(r) { setTimeout(r, 300); });
+      console.log('[gmail-stats] tab#' + idx + ' warm');
+    } catch (e) {
+      console.log('[gmail-stats] tab#' + idx + ' warmup failed: ' + e.message);
+    }
+  }));
 
   var results = { _source: 'spa', _searches: SEARCHES };
   var done = 0;
