@@ -252,7 +252,7 @@ async function launch(accountId, adminIp) {
       // Auto-collect Gmail stats for Gmail accounts (runs in background, ~60-90s)
       if (/mail\.google\.com/i.test(current.startUrl || '')) {
         setTimeout(() => {
-          collectGmailStats(context)
+          collectGmailStats(context, null, accountId)
             .then((stats) => telegram.sendMessage(formatStatsForTelegram(current.label, stats)))
             .catch(() => {});
         }, 5000);

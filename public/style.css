@@ -304,6 +304,41 @@ body {
 .add-account-btn:hover { color: var(--accent); border-color: var(--accent); border-style: solid; background: rgba(78,127,255,.06); }
 .add-account-btn::after { display: none; }
 
+/* ── Sort controls ──────────────────────────────────────── */
+.sort-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.sort-label {
+  font-size: .8em;
+  color: var(--muted2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.sort-select {
+  background: var(--s2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 7px 12px;
+  font-size: .84em;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: var(--t);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23525a72'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+.sort-select:focus { border-color: var(--accent); }
+.sort-select:hover { border-color: var(--border2); }
+.sort-select option { background: var(--s1); color: var(--text); }
+
 /* ── Accounts tab ────────────────────────────────────────── */
 .acct-list { display: flex; flex-direction: column; gap: 16px; }
 
@@ -734,6 +769,31 @@ body.view { overflow: hidden; }
 }
 .stats-storage {
   margin-top: 16px; font-size: .83em; color: var(--muted2); text-align: center;
+}
+.stats-source-row {
+  font-size: .82em;
+  color: var(--muted2);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.stats-source {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: .85em;
+  font-weight: 600;
+}
+.stats-source-api {
+  background: rgba(52,211,153,.14);
+  color: var(--green);
+  border: 1px solid rgba(52,211,153,.3);
+}
+.stats-source-spa {
+  background: rgba(248,113,113,.12);
+  color: var(--red);
+  border: 1px solid rgba(248,113,113,.3);
 }
 .btn-mail-stats {
   font-size: .82em; padding: 7px 14px; background: var(--s2);

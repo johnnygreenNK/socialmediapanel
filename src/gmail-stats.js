@@ -1,5 +1,14 @@
-// Gmail stats — uses context.request (bypasses Service Worker) with intercepted tokens,
-// falls back to SPA pagination for small result sets
+// Gmail stats — tries Gmail REST API (OAuth2) first for accurate counts,
+// falls back to SPA scraping for approximate numbers.
+
+import {
+  isConfigured as gmailApiConfigured,
+  hasToken,
+  getAccessToken,
+  startOAuthFlow,
+  getMessageCount,
+  getProfile,
+} from './gmail-api.js';
 
 var NAV_TIMEOUT = 30000;
 var SEARCH_WAIT = 4000;
@@ -30,8 +39,9 @@ export function formatStatsForTelegram(label, s) {
     var reason = s && s.error === 'not_logged_in' ? 'konto nie jest zalogowane' : (s && s.error || 'nieznany');
     return '\u{1F4CA} Statystyki maili — ' + label + '\n\n❌ Błąd: ' + reason;
   }
+  var source = s._source === 'api' ? ' (Gmail API)' : ' (SPA)';
   var lines = [
-    '\u{1F4CA} Statystyki maili — ' + label,
+    '\u{1F4CA} Statystyki maili — ' + label + source,
     '',
     '\u{1F4E5} Skrzynka odbiorcza: ' + fmtN(s.inbox),
     '\u{1F4E4} Wysłane:            ' + fmtN(s.sent),
@@ -59,9 +69,73 @@ export function formatStatsForTelegram(label, s) {
   return lines.join('\n');
 }
 
+// ─── Gmail API approach (accurate) ───────────────────────────────────────
+
+async function collectViaApi(context, accountId, onProgress) {
+  if (!gmailApiConfigured()) return null;
+
+  var accessToken = await getAccessToken(accountId);
+
+  if (!accessToken) {
+    if (!await hasToken(accountId)) {
+      onProgress('Autoryzacja Gmail API (jednorazowo)...');
+      try {
+        accessToken = await startOAuthFlow(context, accountId);
+      } catch (err) {
+        console.log('[gmail-stats] OAuth flow failed: ' + err.message);
+        return null;
+      }
+    } else {
+      console.log('[gmail-stats] refresh token expired, needs re-auth');
+      onProgress('Odnawianie autoryzacji Gmail API...');
+      try {
+        accessToken = await startOAuthFlow(context, accountId);
+      } catch (err) {
+        console.log('[gmail-stats] re-auth failed: ' + err.message);
+        return null;
+      }
+    }
+  }
+
+  var results = { _source: 'api' };
+
+  for (var i = 0; i < SEARCHES.length; i++) {
+    var s = SEARCHES[i];
+    onProgress('Gmail API: ' + s.label + '...');
+    try {
+      results[s.key] = await getMessageCount(accessToken, s.query);
+      console.log('[gmail-stats] API ' + s.label + ': ' + results[s.key]);
+    } catch (err) {
+      console.log('[gmail-stats] API error for ' + s.key + ': ' + err.message);
+      if (err.message.includes('401')) {
+        accessToken = await getAccessToken(accountId);
+        if (!accessToken) return null;
+        try {
+          results[s.key] = await getMessageCount(accessToken, s.query);
+        } catch {
+          results[s.key] = null;
+        }
+      } else {
+        results[s.key] = null;
+      }
+    }
+  }
+
+  // Profile info (storage, email)
+  onProgress('Gmail API: profil...');
+  try {
+    var profile = await getProfile(accessToken);
+    if (profile.emailAddress) results.profileEmail = profile.emailAddress;
+    // messagesTotal and threadsTotal from profile
+    if (profile.messagesTotal) results.totalMessages = profile.messagesTotal;
+  } catch {}
+
+  return results;
+}
+
+// ─── SPA scraping approach (fallback, limited to "z wielu" for >50) ──────
+
 async function tryContextRequest(context, ik, at, query) {
-  // Use Playwright context.request — makes HTTP from Node.js with browser cookies,
-  // completely bypasses Service Worker
   try {
     var apiUrl = 'https://mail.google.com/mail/u/0/?ui=2&ik=' + ik + '&at=' + at +
       '&view=tl&start=0&num=1&rt=c&q=' + encodeURIComponent(query);
@@ -75,7 +149,6 @@ async function tryContextRequest(context, ik, at, query) {
     if (text && text.charAt(0) !== '<') {
       var m = text.match(/\["te",\s*(\d+)/);
       if (m) return parseInt(m[1]);
-      // Log for debugging
       console.log('[gmail-stats] context.request got non-HTML but no te: ' + text.substring(0, 200));
       return null;
     }
@@ -93,7 +166,7 @@ async function searchCountSPA(page, query, label) {
     await new Promise(function(r) { setTimeout(r, SEARCH_WAIT); });
     var parsed = await page.evaluate(function() {
       var text = document.body.innerText || '';
-      var norm = text.replace(/[   ​]/g, ' ').replace(/[–—]/g, '-');
+      var norm = text.replace(/[   ​]/g, ' ').replace(/[–—]/g, '-');
       if (/nie pasuj|brak wynik|brak rozm/i.test(norm)) return { count: 0, src: 'no-results' };
       var m = norm.match(/(\d+)\s*-\s*(\d+)\s+z\s+([\d ]+\d)/);
       if (m) {
@@ -111,12 +184,10 @@ async function searchCountSPA(page, query, label) {
   }
 }
 
-export async function collectGmailStats(context, onProgress) {
-  if (!onProgress) onProgress = function() {};
+async function collectViaSPA(context, onProgress) {
   var page = await context.newPage();
 
   try {
-    // Capture tokens from Gmail's own requests
     var ik = null;
     var at = null;
     page.on('response', function(response) {
@@ -125,7 +196,7 @@ export async function collectGmailStats(context, onProgress) {
       if (!at) { var m2 = url.match(/[?&]at=([^&]{10,})/); if (m2) at = m2[1]; }
     });
 
-    onProgress('Ładowanie Gmail...');
+    onProgress('Ładowanie Gmail (SPA)...');
     await page.goto('https://mail.google.com/mail/u/0/#inbox', {
       waitUntil: 'load',
       timeout: NAV_TIMEOUT,
@@ -134,13 +205,11 @@ export async function collectGmailStats(context, onProgress) {
 
     var url = page.url();
     console.log('[gmail-stats] Gmail loaded, url: ' + url);
-    console.log('[gmail-stats] tokens: ik=' + (ik || 'NONE') + ' at=' + (at ? at.substring(0, 20) + '...' : 'NONE'));
 
     if (!url.includes('mail.google.com')) {
       return { error: 'not_logged_in', url: url };
     }
 
-    // Test context.request approach (bypasses Service Worker)
     var useContextReq = false;
     if (ik && at) {
       var testCount = await tryContextRequest(context, ik, at, 'in:sent');
@@ -150,13 +219,12 @@ export async function collectGmailStats(context, onProgress) {
       }
     }
 
-    var results = {};
+    var results = { _source: 'spa' };
 
     for (var i = 0; i < SEARCHES.length; i++) {
       var s = SEARCHES[i];
       onProgress('Zliczam: ' + s.label + '...');
 
-      // Try context.request API first
       if (useContextReq) {
         var apiCount = await tryContextRequest(context, ik, at, s.query);
         if (apiCount !== null) {
@@ -166,7 +234,6 @@ export async function collectGmailStats(context, onProgress) {
         }
       }
 
-      // Fallback: SPA navigation
       results[s.key] = await searchCountSPA(page, s.query, s.label);
     }
 
@@ -215,4 +282,29 @@ export async function collectGmailStats(context, onProgress) {
   } finally {
     await page.close().catch(function() {});
   }
+}
+
+// ─── Main entry point ────────────────────────────────────────────────────
+
+export async function collectGmailStats(context, onProgress, accountId) {
+  if (!onProgress) onProgress = function() {};
+
+  // Try Gmail API first (accurate counts)
+  if (accountId && gmailApiConfigured()) {
+    onProgress('Próba Gmail API...');
+    try {
+      var apiResults = await collectViaApi(context, accountId, onProgress);
+      if (apiResults) {
+        // Contacts and storage aren't available via Gmail API — get them via SPA if needed
+        onProgress('Gotowe (Gmail API)!');
+        return apiResults;
+      }
+    } catch (err) {
+      console.log('[gmail-stats] API approach failed, falling back to SPA: ' + err.message);
+    }
+    onProgress('Gmail API niedostępne, przełączam na SPA...');
+  }
+
+  // Fallback to SPA scraping
+  return collectViaSPA(context, onProgress);
 }

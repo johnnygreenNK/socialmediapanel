@@ -62,7 +62,20 @@
           <h1>Generate LINK</h1>
           <p class="page-sub">Dodaj nowe konto. Linki do istniejących znajdziesz w zakładce Accounts.</p>
         </div>
-        <button id="addBtn" class="btn-primary">+ Dodaj konto</button>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div class="sort-controls">
+            <label class="sort-label">Sortuj:</label>
+            <select id="genSort" class="sort-select">
+              <option value="default">Domyślnie</option>
+              <option value="name-asc">Nazwa A-Z</option>
+              <option value="name-desc">Nazwa Z-A</option>
+              <option value="email-asc">Email A-Z</option>
+              <option value="email-desc">Email Z-A</option>
+              <option value="platform">Platforma</option>
+            </select>
+          </div>
+          <button id="addBtn" class="btn-primary">+ Dodaj konto</button>
+        </div>
       </div>
 
       <div id="genAccounts" class="account-grid"></div>
@@ -108,6 +121,17 @@
         <div>
           <h1>Accounts</h1>
           <p class="page-sub">Szczegóły kont i zarządzanie sesjami.</p>
+        </div>
+        <div class="sort-controls">
+          <label class="sort-label">Sortuj:</label>
+          <select id="acctSort" class="sort-select">
+            <option value="default">Domyślnie</option>
+            <option value="name-asc">Nazwa A-Z</option>
+            <option value="name-desc">Nazwa Z-A</option>
+            <option value="email-asc">Email A-Z</option>
+            <option value="email-desc">Email Z-A</option>
+            <option value="platform">Platforma</option>
+          </select>
         </div>
       </div>
       <div id="acctList" class="acct-list"></div>

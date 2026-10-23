@@ -29,4 +29,6 @@ export const config = {
   // for it to do anything — see src/telegram.js.
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
   telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
+  gmailClientId: process.env.GMAIL_CLIENT_ID || '',
+  gmailClientSecret: process.env.GMAIL_CLIENT_SECRET || '',
 };

@@ -5,6 +5,7 @@ import * as browser from '../browser.js';
 import { config } from '../config.js';
 import { isLocked, lockoutRemainingMs, recordFailure, recordSuccess } from '../pinGuard.js';
 import { collectGmailStats, formatStatsForTelegram } from '../gmail-stats.js';
+import { isConfigured as gmailApiConfigured, hasToken as hasGmailToken, revokeToken as revokeGmailToken } from '../gmail-api.js';
 import * as telegram from '../telegram.js';
 
 function checkPin(req, reply) {
@@ -222,7 +223,7 @@ export default async function panelRoutes(app) {
     const ctx = browser.getContext(req.params.id);
     if (!ctx) return reply.code(409).send({ error: 'session_not_running' });
 
-    const stats = await collectGmailStats(ctx);
+    const stats = await collectGmailStats(ctx, null, id);
     return stats;
   });
 
@@ -248,7 +249,7 @@ export default async function panelRoutes(app) {
     if (!ctx) { send({ done: true, error: 'session_not_running' }); reply.raw.end(); return; }
 
     try {
-      const stats = await collectGmailStats(ctx, (msg) => send({ step: msg }));
+      const stats = await collectGmailStats(ctx, (msg) => send({ step: msg }), id);
       send({ done: true, stats });
       // Send to Telegram
       const tgText = formatStatsForTelegram(acc.label, stats);
@@ -266,5 +267,27 @@ export default async function panelRoutes(app) {
     if (!acc) return reply.code(404).send({ error: 'unknown_ref' });
     await browser.start(acc.id, req.ip);
     return { accountId: acc.id };
+  });
+
+  // Gmail API status — check if OAuth is configured and authorized
+  app.get('/api/accounts/:id/gmail-api-status', async (req, reply) => {
+    if (checkPin(req, reply) === false) return;
+    const { id } = req.params;
+    const acc = await getAccount(id);
+    if (!acc) return reply.code(404).send({ error: 'unknown_account' });
+    return {
+      configured: gmailApiConfigured(),
+      authorized: await hasGmailToken(id),
+    };
+  });
+
+  // Revoke Gmail API token for re-authorization
+  app.post('/api/accounts/:id/gmail-api-revoke', async (req, reply) => {
+    if (checkPin(req, reply) === false) return;
+    const { id } = req.params;
+    const acc = await getAccount(id);
+    if (!acc) return reply.code(404).send({ error: 'unknown_account' });
+    await revokeGmailToken(id);
+    return { ok: true };
   });
 }

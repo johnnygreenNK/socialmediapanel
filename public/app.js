@@ -42,10 +42,12 @@ async function renderGenerateTab() {
   const res = await api('/api/accounts');
   if (res.status === 401) { showLogin(); return; }
   const accounts = await res.json();
+  const sortMode = $('#genSort')?.value || 'default';
+  const sorted = sortAccounts(accounts, sortMode);
   const grid = $('#genAccounts');
   grid.innerHTML = '';
 
-  for (const a of accounts) {
+  for (const a of sorted) {
     const chip = document.createElement('div');
     chip.className = 'acct-chip';
 
@@ -112,25 +114,61 @@ document.querySelectorAll('.plat-btn').forEach(btn => {
 });
 
 /* ══════════════════════════════════════════════════════════
+   SORTING
+══════════════════════════════════════════════════════════ */
+function detectPlatform(a) {
+  const url = (a.startUrl || '').toLowerCase();
+  if (/mail\.google\.com|gmail\.com/.test(url)) return 'gmail';
+  if (/facebook\.com/.test(url)) return 'facebook';
+  if (/instagram\.com/.test(url)) return 'instagram';
+  if (/x\.com|twitter\.com/.test(url)) return 'twitter';
+  return 'other';
+}
+
+function sortAccounts(accounts, mode) {
+  const sorted = [...accounts];
+  const cmp = (a, b) => (a || '').localeCompare(b || '', 'pl', { sensitivity: 'base' });
+  switch (mode) {
+    case 'name-asc':
+      sorted.sort((a, b) => cmp(a.label, b.label));
+      break;
+    case 'name-desc':
+      sorted.sort((a, b) => cmp(b.label, a.label));
+      break;
+    case 'email-asc':
+      sorted.sort((a, b) => cmp(a.email, b.email));
+      break;
+    case 'email-desc':
+      sorted.sort((a, b) => cmp(b.email, a.email));
+      break;
+    case 'platform': {
+      const order = { gmail: 0, facebook: 1, instagram: 2, twitter: 3, other: 4 };
+      sorted.sort((a, b) => (order[detectPlatform(a)] ?? 9) - (order[detectPlatform(b)] ?? 9) || cmp(a.label, b.label));
+      break;
+    }
+  }
+  return sorted;
+}
+
+/* ══════════════════════════════════════════════════════════
    ACCOUNTS TAB
 ══════════════════════════════════════════════════════════ */
 async function renderAccountsTab() {
   const res = await api('/api/accounts');
   if (!res.ok) return;
   const accounts = await res.json();
+  const sortMode = $('#acctSort')?.value || 'default';
+  const sorted = sortAccounts(accounts, sortMode);
   const list = $('#acctList');
   list.innerHTML = '';
 
-  for (const [i, a] of accounts.entries()) {
+  for (const [i, a] of sorted.entries()) {
     const card = buildAccountCard(a, i * 0.05);
     list.append(card);
-    // No auto-load here on purpose — opening this tab used to fetch a
-    // screenshot + full page info for every running account whether or not
-    // anyone looked at it, which kept every session "active" indefinitely
-    // (idle sessions never got a chance to idle out). Loading is now opt-in
-    // via the "Pokaż podgląd" button — see buildAccountCard.
   }
 }
+
+$('#acctSort')?.addEventListener('change', () => renderAccountsTab());
 
 const isGmailAccount = (a) =>
   /mail\.google\.com|gmail\.com/i.test(a.startUrl || '');
@@ -391,6 +429,10 @@ function buildStatsHTML(stats) {
     return `<p class="stats-error">Błąd: ${stats.error === 'not_logged_in' ? 'Konto nie jest zalogowane w Gmail.' : stats.error}</p>`;
   }
 
+  const source = stats._source === 'api'
+    ? '<span class="stats-source stats-source-api">Gmail API</span>'
+    : '<span class="stats-source stats-source-spa">SPA (przybliżone)</span>';
+
   const rows = [
     { section: 'Skrzynka' },
     { label: '📥 Skrzynka odbiorcza',   val: stats.inbox },
@@ -412,7 +454,8 @@ function buildStatsHTML(stats) {
     { label: '₿ Giełdy kryptowalut', val: stats.exchanges },
   ];
 
-  let html = '<table class="stats-table">';
+  let html = `<div class="stats-source-row">Źródło: ${source}</div>`;
+  html += '<table class="stats-table">';
   for (const r of rows) {
     if (r.section) {
       html += `<tr class="stats-section-row"><td colspan="2">${r.section}</td></tr>`;
