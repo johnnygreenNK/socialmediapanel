@@ -475,32 +475,78 @@ async function launch(accountId, adminIp) {
       }
     }).catch(() => {});
 
-    // Auto-click "Try another way" na ekranie AFAD (device verification),
-    // bo FB prompt wymaga synchronizacji aplikacji FB <-> web backend przez
-    // Twój IP sesji, co przez proxy prawie nigdy nie działa. Wymuszamy
-    // alternatywę (SMS/kod), która jest pojedynczym POSTem.
+    // Diagnostyka ekranów logowania/2FA: zrzuć co dokładnie jest na stronie
+    // — wszystkie klikalne elementy + tytuł + pierwsze 500 znaków body
+    // — żeby wiedzieć co FB wyświetla i czym to się różni od oczekiwań.
     if (/auth_platform\/afad|two_factor|checkpoint/.test(url)) {
       setTimeout(async () => {
         try {
+          const dump = await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('a, button, [role="button"], div[tabindex]'))
+              .map((el) => {
+                const txt = (el.innerText || el.textContent || '').trim().slice(0, 100);
+                const label = el.getAttribute('aria-label') || '';
+                const href = el.getAttribute('href') || '';
+                if (!txt && !label && !href) return null;
+                return { tag: el.tagName.toLowerCase(), txt, label, href: href.slice(0, 100) };
+              })
+              .filter(Boolean)
+              .slice(0, 40);
+            const h = Array.from(document.querySelectorAll('h1, h2, h3')).map((el) => (el.innerText || '').trim()).filter(Boolean).slice(0, 10);
+            return {
+              title: document.title,
+              headings: h,
+              bodyFirst: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 800),
+              buttons,
+              url: location.href.slice(0, 300),
+            };
+          }).catch((e) => ({ error: String(e.message || e) }));
+
+          console.log(`[flow:${accountId}] 📸 AFAD/2FA DUMP:`);
+          console.log(`  title: ${dump.title}`);
+          console.log(`  headings: ${JSON.stringify(dump.headings)}`);
+          console.log(`  bodyFirst: ${dump.bodyFirst}`);
+          console.log(`  buttons (${(dump.buttons || []).length}):`);
+          for (const b of (dump.buttons || [])) {
+            console.log(`    [${b.tag}] txt="${b.txt}" label="${b.label}" href="${b.href}"`);
+          }
+
+          // Spróbuj kliknąć TAKŻE heurystycznie — szersza lista wzorców
           const clicked = await page.evaluate(() => {
-            // Szukaj przycisku "Spróbuj inny sposób" / "Try another way"
-            const buttons = Array.from(document.querySelectorAll('a, button, [role="button"], div[tabindex]'));
-            const match = buttons.find((b) => {
-              const txt = (b.innerText || b.textContent || '').trim().toLowerCase();
-              return /spróbuj inny|try another|użyj innej|use another|inny sposób|another way|alternative/.test(txt);
-            });
-            if (match) {
-              match.click();
-              return (match.innerText || match.textContent || '').trim().slice(0, 80);
+            const PATTERNS = [
+              /spróbuj inn/i, /try another/i, /użyj inn/i, /use another/i,
+              /inny sposób/i, /another way/i, /alternative/i,
+              /potrzebuj.*pomoc/i, /need help/i,
+              /zaloguj.*inacz/i, /log.*different/i,
+              /mam problem/i, /having trouble/i,
+              /nie mogę/i, /can't do/i,
+              /przejdź/i,
+              // FB-specific
+              /zrezygnuj/i, /dismiss/i,
+            ];
+            const els = Array.from(document.querySelectorAll('a, button, [role="button"], div[tabindex]'));
+            for (const el of els) {
+              const txt = (el.innerText || el.textContent || '').trim();
+              const label = el.getAttribute('aria-label') || '';
+              const combined = `${txt} ${label}`;
+              if (PATTERNS.some((p) => p.test(combined))) {
+                el.click();
+                return txt.slice(0, 80) || label.slice(0, 80);
+              }
             }
             return null;
           }).catch(() => null);
           if (clicked) {
-            console.log(`[flow:${accountId}] 🚨 AUTO-CLICKED "${clicked}" na ekranie weryfikacji`);
+            console.log(`[flow:${accountId}] 🚨 AUTO-CLICKED "${clicked}"`);
             pushLog(accountId, 'nav', `🤖 Auto-klik: ${clicked}`);
+          } else {
+            console.log(`[flow:${accountId}] ⚠️ Nic nie pasuje — zobacz dump wyżej, dostosuj wzorce`);
+            pushLog(accountId, 'nav', `⚠️ AFAD: brak przycisku do klinięcia — sprawdź logi`);
           }
-        } catch {}
-      }, 15000); // Daj 15s na próbę normalnego flow przed force
+        } catch (e) {
+          console.log(`[flow:${accountId}] AFAD dump error: ${e.message}`);
+        }
+      }, 10000); // 10s na stabilizację strony
     }
 
     if (notifiedLogin) return;
