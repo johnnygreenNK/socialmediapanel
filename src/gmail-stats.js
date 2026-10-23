@@ -73,32 +73,97 @@ function fmtN(n) {
   return n.toLocaleString('pl-PL');
 }
 
+// Section definitions for pretty grouping in Telegram and the panel.
+// Each section matches keys by prefix OR explicit list; items keep the
+// order they appeared in keywords.txt.
+var SECTIONS = [
+  { title: '📬 Skrzynka',             keys: ['inbox', 'sent', 'unread', 'starred', 'important', 'spam', 'trash'] },
+  { title: '🗂 Kategorie Gmail',      prefix: 'cat_' },
+  { title: '📘 Facebook / Meta',      keys: ['facebook', 'instagram', 'whatsapp'] },
+  { title: '📱 Social media',         keys: ['linkedin', 'twitter_x', 'tiktok', 'youtube', 'discord', 'telegram'] },
+  { title: '₿ Giełdy / krypto',       keys: ['binance', 'bybit', 'kraken', 'kucoin', 'bitget', 'gateio', 'mexc', 'cryptocom', 'htx', 'gemini', 'bitstamp', 'whitebit', 'trustwallet'] },
+  { title: '🔐 Bezpieczeństwo',       prefix: 'sec_' },
+  { title: '💳 Płatności',            keys: ['paypal', 'revolut', 'stripe'] },
+  { title: '🛒 Zakupy / konta',       keys: ['allegro', 'olx', 'amazon', 'apple', 'microsoft'] },
+  { title: '🎬 Subskrypcje',          keys: ['netflix', 'spotify', 'steam'] },
+];
+
+function keyMatchesSection(key, section) {
+  if (section.prefix && key.indexOf(section.prefix) === 0) return true;
+  if (section.keys && section.keys.indexOf(key) >= 0) return true;
+  return false;
+}
+
+// Group searches into sections (preserving keywords.txt order within).
+// Unknown keys land in a trailing "Inne" section.
+function groupSearches(searches) {
+  var groups = SECTIONS.map(function(sec) { return { title: sec.title, items: [] }; });
+  var other = { title: 'ℹ️ Inne', items: [] };
+  for (var i = 0; i < searches.length; i++) {
+    var s = searches[i];
+    var placed = false;
+    for (var j = 0; j < SECTIONS.length; j++) {
+      if (keyMatchesSection(s.key, SECTIONS[j])) { groups[j].items.push(s); placed = true; break; }
+    }
+    if (!placed) other.items.push(s);
+  }
+  var result = groups.filter(function(g) { return g.items.length > 0; });
+  if (other.items.length > 0) result.push(other);
+  return result;
+}
+
 export function formatStatsForTelegram(label, s) {
   if (!s || s.error) {
     var reason = s && s.error === 'not_logged_in' ? 'konto nie jest zalogowane' : (s && s.error || 'nieznany');
-    return '\u{1F4CA} Statystyki maili — ' + label + '\n\n❌ Błąd: ' + reason;
+    return '📊 <b>Statystyki maili — ' + escapeHtml(label) + '</b>\n\n❌ Błąd: ' + escapeHtml(reason);
   }
-  var source = s._source === 'api' ? ' (Gmail API)' : ' (SPA)';
-  var lines = ['\u{1F4CA} Statystyki maili — ' + label + source, ''];
-  // Render in SEARCHES order so users control grouping via keywords.txt
+  var source = s._source === 'api' ? 'Gmail API' : 'SPA';
+  var out = '📊 <b>Statystyki maili — ' + escapeHtml(label) + '</b>  <i>· ' + source + '</i>\n';
+
   var searches = s._searches || SEARCHES;
-  var maxLabelLen = 0;
-  for (var i = 0; i < searches.length; i++) {
-    if (searches[i].label.length > maxLabelLen) maxLabelLen = searches[i].label.length;
+  var groups = groupSearches(searches);
+
+  // Each section = bold title line, then its own <pre> block so column
+  // alignment survives in Telegram (which doesn't allow nested tags in <pre>).
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g];
+    var items = grp.items;
+    var maxLen = 0;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].label.length > maxLen) maxLen = items[i].label.length;
+    }
+    var rows = '';
+    for (var k = 0; k < items.length; k++) {
+      var it = items[k];
+      var val = s[it.key];
+      var pad = ' '.repeat(Math.max(0, maxLen - it.label.length));
+      rows += escapeHtml(it.label) + pad + '  ' + escapeHtml(fmtN(val)) + '\n';
+    }
+    out += '\n' + escapeHtml(grp.title) + '\n<pre>' + rows + '</pre>';
   }
-  for (var k = 0; k < searches.length; k++) {
-    var sch = searches[k];
-    var val = s[sch.key];
-    var pad = ' '.repeat(Math.max(0, maxLabelLen - sch.label.length));
-    lines.push('  ' + sch.label + ':' + pad + ' ' + fmtN(val));
+
+  // Account tail (contacts/storage)
+  if (s.contacts !== undefined || s.storage) {
+    var tailRows = '';
+    var tailMax = 0;
+    if (s.contacts !== undefined) tailMax = Math.max(tailMax, 'Kontakty'.length);
+    if (s.storage) tailMax = Math.max(tailMax, 'Pamięć'.length);
+    if (s.contacts !== undefined) {
+      var p = ' '.repeat(Math.max(0, tailMax - 'Kontakty'.length));
+      tailRows += '👥 Kontakty' + p + '  ' + fmtN(s.contacts) + '\n';
+    }
+    if (s.storage) {
+      var p2 = ' '.repeat(Math.max(0, tailMax - 'Pamięć'.length));
+      tailRows += '💾 Pamięć' + p2 + '    ' + s.storage.used + ' z ' + s.storage.total + ' (' + s.storage.percent + '%)\n';
+    }
+    out += '\n👤 Konto\n<pre>' + tailRows + '</pre>';
   }
-  if (s.contacts !== undefined) {
-    lines.push('', '\u{1F465} Kontakty: ' + fmtN(s.contacts));
-  }
-  if (s.storage) {
-    lines.push('\u{1F4BE} Pamięć: ' + s.storage.used + ' z ' + s.storage.total + ' (' + s.storage.percent + '%)');
-  }
-  return lines.join('\n');
+
+  return out;
+}
+
+function escapeHtml(x) {
+  return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ─── Gmail API approach (accurate) ───────────────────────────────────────

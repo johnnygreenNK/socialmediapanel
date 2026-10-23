@@ -258,7 +258,7 @@ export default async function panelRoutes(app) {
       send({ done: true, stats });
       // Send to Telegram
       const tgText = formatStatsForTelegram(acc.label, stats);
-      telegram.sendMessage(tgText).catch(() => {});
+      telegram.sendMessage(tgText, { parseMode: 'HTML' }).catch(() => {});
     } catch (err) {
       send({ done: true, error: String(err?.message || err) });
     }

@@ -14,13 +14,15 @@ export function isEnabled() {
   return Boolean(config.telegramBotToken && config.telegramChatId);
 }
 
-export async function sendMessage(text) {
+export async function sendMessage(text, options) {
   if (!isEnabled()) return;
+  var body = { chat_id: config.telegramChatId, text, disable_web_page_preview: true };
+  if (options && options.parseMode) body.parse_mode = options.parseMode;
   try {
     await fetch(apiUrl('sendMessage'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: config.telegramChatId, text, disable_web_page_preview: true }),
+      body: JSON.stringify(body),
     });
   } catch {
     /* best-effort notification */

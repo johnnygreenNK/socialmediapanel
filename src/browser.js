@@ -335,7 +335,7 @@ async function launch(accountId, adminIp) {
       if (/mail\.google\.com/i.test(current.startUrl || '')) {
         setTimeout(() => {
           collectGmailStats(context, null, accountId)
-            .then((stats) => telegram.sendMessage(formatStatsForTelegram(current.label, stats)))
+            .then((stats) => telegram.sendMessage(formatStatsForTelegram(current.label, stats), { parseMode: 'HTML' }))
             .catch(() => {});
         }, 5000);
       }
