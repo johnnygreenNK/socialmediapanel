@@ -191,16 +191,21 @@ export default async function panelRoutes(app) {
         const el = document.querySelector('img[alt*="profile" i], img[alt*="avatar" i], img[alt*="zdjęcie" i]');
         return el ? el.src : null;
       }).catch(() => null)),
-      withTimeout(page.evaluate(() => navigator.userAgent).catch(() => null)),
+      withTimeout(page.evaluate(() => navigator.userAgent).catch(() => null), 3000),
       withTimeout(page.evaluate(() => {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 4000);
-        return fetch('https://api.ipify.org?format=json', { signal: ctrl.signal })
-          .then((r) => r.json())
-          .then((d) => d.ip)
-          .catch(() => null)
-          .finally(() => clearTimeout(t));
-      }).catch(() => null), 6000),
+        const tryFetch = (url, extract) => {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 3000);
+          return fetch(url, { signal: ctrl.signal })
+            .then((r) => r.ok ? r.json() : null)
+            .then(extract)
+            .catch(() => null)
+            .finally(() => clearTimeout(t));
+        };
+        return tryFetch('https://api.ipify.org?format=json', d => d?.ip)
+          .then(ip => ip || tryFetch('https://api.myip.com', d => d?.ip))
+          .then(ip => ip || tryFetch('https://ipinfo.io/json', d => d?.ip));
+      }).catch(() => null), 8000),
     ]);
     const blocked = (title ?? '') === '' && loginHint === null && userAgent === null;
     return { running: true, title: title ?? '', url, loginHint, avatarUrl, userAgent, ip, blocked };
@@ -223,7 +228,7 @@ export default async function panelRoutes(app) {
     const ctx = browser.getContext(req.params.id);
     if (!ctx) return reply.code(409).send({ error: 'session_not_running' });
 
-    const stats = await collectGmailStats(ctx, null, id);
+    const stats = await collectGmailStats(ctx, null, req.params.id);
     return stats;
   });
 
