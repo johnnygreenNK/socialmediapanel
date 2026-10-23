@@ -64,6 +64,17 @@ document.querySelectorAll('.nav-item').forEach(btn => {
    GENERATE LINK TAB
 ══════════════════════════════════════════════════════════ */
 let selectedAccountId = null;
+let genTabPollTimer = null;
+
+function startGenTabAutoRefresh() {
+  if (genTabPollTimer) return;
+  genTabPollTimer = setInterval(() => {
+    const activeTab = document.querySelector('.tab.active');
+    if (activeTab && activeTab.id === 'tab-generate') {
+      renderGenerateTab();
+    }
+  }, 3000);
+}
 
 async function renderGenerateTab() {
   const res = await api('/api/accounts');
@@ -101,8 +112,22 @@ async function renderGenerateTab() {
 
     const connected = Boolean(a.email || a.password);
     const status = document.createElement('span');
-    status.className = `min-acct-status ${connected ? 'is-connected' : 'is-disconnected'}`;
-    status.textContent = connected ? '● Connected' : '○ Not connected';
+    if (connected) {
+      status.className = 'min-acct-status is-connected';
+      status.textContent = '● Connected';
+    } else if (a.navState === 'ready') {
+      status.className = 'min-acct-status is-ready';
+      status.textContent = '● Ready — waiting';
+    } else if (a.navState === 'failed') {
+      status.className = 'min-acct-status is-failed';
+      status.textContent = '✕ Page failed';
+    } else if (a.navState === 'loading' || a.running) {
+      status.className = 'min-acct-status is-loading';
+      status.textContent = '◐ Loading...';
+    } else {
+      status.className = 'min-acct-status is-disconnected';
+      status.textContent = '○ Not started';
+    }
 
     const del = document.createElement('button');
     del.className = 'min-acct-del';
@@ -468,6 +493,7 @@ async function boot() {
   const res = await api('/api/accounts');
   if (res.status === 401) { showLogin(); return; }
   renderGenerateTab();
+  startGenTabAutoRefresh();
 }
 boot();
 

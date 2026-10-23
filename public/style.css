@@ -953,3 +953,13 @@ body.view { overflow: hidden; }
   color: #4e7fff;
   border: 2px solid rgba(78, 127, 255, 0.4);
 }
+
+/* ─── Status: loading / ready / failed ──────────────────── */
+.min-acct-status.is-loading { color: #f59e0b; }
+.min-acct-status.is-ready { color: #3b82f6; }
+.min-acct-status.is-failed { color: #ef4444; }
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+.min-acct-status.is-loading { animation: pulse 1.4s ease-in-out infinite; }

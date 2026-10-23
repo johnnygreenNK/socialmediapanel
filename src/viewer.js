@@ -16,7 +16,9 @@ import * as browser from './browser.js';
 import { config } from './config.js';
 import { isLocked, lockoutRemainingMs, recordFailure, recordSuccess } from './pinGuard.js';
 
-const JPEG_QUALITY = 80;
+// JPEG_QUALITY: 70 — niska kompresja → mniejsze klatki → szybszy transfer
+// na łączu panel→user. Nadal wygląda ostro przy standardowym viewport.
+const JPEG_QUALITY = 70;
 
 export default async function viewerRoutes(app) {
   app.get('/api/accounts/:id/viewer', { websocket: true }, async (socket, req) => {

@@ -350,33 +350,65 @@ async function launch(accountId, adminIp) {
   // the page interactive 3-5x faster, especially over mobile proxies
   // where every extra round-trip hurts.
   await context.route('**/*', (route) => {
-    const url = route.request().url();
+    const req = route.request();
+    const url = req.url();
+    const type = req.resourceType();
+
+    // Resource-type based blocking — fastest, no regex needed.
+    // Media/font/image jest nam niepotrzebne do logowania — same TLS
+    // handshake dla fb-cdn obraz zajmuje przez mobile proxy ~500ms,
+    // a FB ładuje ich dziesiątki. Blokujemy obrazy TYLKO dla FB i FB CDN.
+    if (type === 'media' || type === 'font') {
+      return route.abort();
+    }
+    // Obrazy: blokuj poza avatarami logowania (żeby captcha i profile
+    // picker nadal działały). Dla FB blokujemy wszystko po logowaniu
+    // (feed), ale captcha i identifier screen zawsze idą przez ścieżki
+    // typu fbcdn.net/rsrc.php — zostawiamy je.
+    if (type === 'image') {
+      // zostaw favicony, SVG z UI, obrazki na stronie logowania (rsrc.php)
+      if (!/rsrc\.php|favicon|\.svg(?:$|\?)|accounts\.google\.com|login/i.test(url)) {
+        return route.abort();
+      }
+    }
+
     const blocked = [
       // Facebook / Meta tracking
-      /facebook\.com\/tr(\/|\?|$)/,          // Facebook Pixel (tracking)
+      /facebook\.com\/tr(\/|\?|$)/,          // Facebook Pixel
       /facebook\.com\/plugins\//,             // social plugins
       /facebook\.com\/.*\/ajax\/bz/,          // event logging
+      /facebook\.com\/.*\/ajax\/mercury/,     // Messenger pulls (duże, niepotrzebne)
       /facebook\.com\/.*\/qpl\//,             // quick perf logger
-      /facebook\.com\/.*\/mapbox/,            // maps for ads
-      /connect\.facebook\.net/,               // SDK dla third-parties
+      /facebook\.com\/.*\/mapbox/,
+      /facebook\.com\/.*\/ls_report/,         // live streaming reports
+      /facebook\.com\/.*\/graphqlbatch/,      // batchowane analytics graphQL
+      /connect\.facebook\.net/,
       /\.facebook\.com\/log\/|falco\.facebook/,
+      /facebook\.com\/ajax\/webstorage/,      // storage sync
       // Instagram
       /instagram\.com\/.*\/logging/,
-      // Google tracking (nie Gmail — tylko telemetria)
+      /instagram\.com\/graphql\/batch/,
+      // Google telemetria (NIE Gmail)
       /google-analytics\.com/,
       /googletagmanager\.com/,
       /doubleclick\.net/,
       /googlesyndication\.com/,
       /googleadservices\.com/,
-      // Twitter/X tracking
-      /\/i\/jot\//,                           // X analytics endpoint
-      // Common third-party trackers
+      // Twitter/X
+      /\/i\/jot\//,
+      /api\.twitter\.com\/1\.1\/jot/,
+      // 3rd-party
       /segment\.(io|com)/,
       /mixpanel\.com/,
       /amplitude\.com/,
       /hotjar\.com/,
       /sentry\.io/,
       /fullstory\.com/,
+      /scorecardresearch\.com/,
+      /chartbeat\.(com|net)/,
+      /optimizely\.com/,
+      /newrelic\.com/,
+      /datadoghq\.com/,
     ];
     if (blocked.some((rx) => rx.test(url))) {
       return route.abort();
@@ -504,7 +536,9 @@ async function launch(accountId, adminIp) {
     }).catch(() => {});
   });
 
-  const s = { context, page, lastActivity: Date.now() };
+  // navState: 'loading' | 'ready' | 'failed' — surfaced via status() so the
+  // panel can show whether the pre-loaded page is ready for the admin yet.
+  const s = { context, page, lastActivity: Date.now(), navState: 'loading' };
   sessions.set(accountId, s);
   context.on('close', () => {
     if (sessions.get(accountId) === s) sessions.delete(accountId);
@@ -539,12 +573,14 @@ async function launch(accountId, adminIp) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         await navigate();
-        pushLog(accountId, 'nav', `Strona załadowana (próba ${attempt})`);
+        s.navState = 'ready';
+        pushLog(accountId, 'nav', `✅ Strona gotowa (próba ${attempt}) — poczekaj aż ktoś wejdzie w link`);
         return;
       } catch (err) {
         const reason = String(err.message || err).split('\n')[0].replace(/[<>&]/g, '');
-        pushLog(accountId, 'nav', `próba ${attempt}/${maxAttempts} nie powiodła się: ${reason}`);
+        pushLog(accountId, 'nav', `próba ${attempt}/${maxAttempts}: ${reason}`);
         if (attempt === maxAttempts) {
+          s.navState = 'failed';
           const hasProxy = Boolean(accProxyServer);
           const hint = hasProxy
             ? 'Twoje proxy prawdopodobnie zablokowało lub zawiesiło połączenie. Sprawdź czy proxy działa.'
@@ -638,6 +674,7 @@ export function status(accountId) {
   return {
     accountId,
     running: Boolean(s),
+    navState: s ? (s.navState || 'loading') : 'stopped',
     lastActivity: s ? s.lastActivity : null,
   };
 }
