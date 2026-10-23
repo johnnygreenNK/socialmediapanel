@@ -219,26 +219,80 @@ async function parsePageCount(page) {
   }).catch(function() { return { count: null, src: 'error' }; });
 }
 
-// Strategy 2b: Jump to the last page via the "Oldest" button so Gmail
-// shows the exact total ("1151-1187 z 1187"). The button lives in Gmail's
-// pagination toolbar (div[gh="tm"]).
-async function jumpToLastPage(page) {
-  var clicked = await page.evaluate(function() {
-    // Pagination toolbar contains Newest, Newer, Older, Oldest.
-    // We want "Oldest" / "Najstarsze" (double-arrow, aria-label on the <div>).
-    var all = document.querySelectorAll('div[gh="tm"] [aria-label], div[role="toolbar"] [aria-label]');
-    for (var i = 0; i < all.length; i++) {
-      var al = (all[i].getAttribute('aria-label') || '').toLowerCase();
-      // "Najstarsze" (PL) or "Oldest" (EN). Must NOT match plain "Starsze"/"Older".
-      var isOldest = /najstarsz/.test(al) || /\boldest\b/.test(al);
-      if (!isOldest) continue;
-      if (all[i].getAttribute('aria-disabled') === 'true') return 'disabled';
-      all[i].click();
-      return 'clicked';
+// Strategy 2b: Find the last page via URL pagination.
+// Gmail's hash is "#search/<encoded-query>/p<N>" (page N, 50 per page).
+// We binary-search for the highest N that still has results, then compute
+// total = (N-1)*50 + <rows on that page>.
+async function jumpToLastPageViaUrl(page, query, label) {
+  var encoded = encodeURIComponent(query);
+  async function tryPage(n) {
+    await page.evaluate(function(h) { window.location.hash = h; },
+      '#search/' + encoded + '/p' + n).catch(function() {});
+    await new Promise(function(r) { setTimeout(r, 2500); });
+    var p = await parsePageCount(page);
+    // Also measure visible row count on this page
+    var rows = await page.evaluate(function() {
+      return document.querySelectorAll('tr.zA, tr[role="row"]').length;
+    }).catch(function() { return 0; });
+    return { parsed: p, rows: rows, n: n };
+  }
+
+  // Binary search: lo always has results, hi doesn't (or unknown)
+  var lo = 1, hi = 500, lastGood = null;
+  // Fast exponential probe up to find the first empty page
+  var probe = 2;
+  var firstEmpty = null;
+  while (probe <= 500) {
+    var r = await tryPage(probe);
+    if (r.parsed.src === 'pagination') {
+      console.log('[gmail-stats] ' + label + ': probe p' + probe + ' → pagination ' + r.parsed.count);
+      return r.parsed.count; // Exact total already shown
     }
-    return 'not-found';
-  }).catch(function() { return 'error'; });
-  return clicked;
+    if (r.rows > 0 && r.rows < 50 && r.parsed.src !== 'z-wielu') {
+      // Partial page = this IS the last page
+      var total = (probe - 1) * 50 + r.rows;
+      console.log('[gmail-stats] ' + label + ': probe p' + probe + ' partial (' + r.rows + ' rows) → ' + total);
+      return total;
+    }
+    if (r.rows === 0 || r.parsed.src === 'no-results' || r.parsed.src === 'no-rows') {
+      firstEmpty = probe;
+      hi = probe - 1;
+      break;
+    }
+    // Full page of 50, still "z wielu" — go higher
+    lo = probe;
+    lastGood = r;
+    probe = probe * 2;
+  }
+  if (firstEmpty === null) {
+    // Even p=500 had 50 rows and "z wielu" → more than 25000 messages
+    console.log('[gmail-stats] ' + label + ': >25000 (capped)');
+    return 25000;
+  }
+
+  // Binary search between lo (has 50) and hi (one below first empty)
+  while (lo < hi) {
+    var mid = Math.floor((lo + hi + 1) / 2);
+    var rm = await tryPage(mid);
+    if (rm.parsed.src === 'pagination') {
+      console.log('[gmail-stats] ' + label + ': bsearch p' + mid + ' → pagination ' + rm.parsed.count);
+      return rm.parsed.count;
+    }
+    if (rm.rows > 0 && rm.rows < 50 && rm.parsed.src !== 'z-wielu') {
+      var tot = (mid - 1) * 50 + rm.rows;
+      console.log('[gmail-stats] ' + label + ': bsearch p' + mid + ' partial → ' + tot);
+      return tot;
+    }
+    if (rm.rows === 0 || rm.parsed.src === 'no-results' || rm.parsed.src === 'no-rows') {
+      hi = mid - 1;
+    } else {
+      lo = mid;
+      lastGood = rm;
+    }
+  }
+  // Final: lo has full page, lo+1 was empty → total = lo*50
+  console.log('[gmail-stats] ' + label + ': bsearch converged at p' + lo + ' full → ' + (lo * 50));
+  return lo * 50;
 }
 
 
@@ -297,25 +351,16 @@ async function searchCount(context, page, ik, at, query, label, useContextReq) {
 
   var parsed = await parsePageCount(page);
 
-  // If Gmail shows "z wielu", jump to the last page to get the exact count.
+  // If Gmail shows "z wielu", binary-search page URLs to find the last page.
   if (parsed.src === 'z-wielu') {
-    var jump = await jumpToLastPage(page);
-    console.log('[gmail-stats] ' + label + ': z-wielu → jump=' + jump);
-    if (jump === 'clicked') {
-      // Wait for pagination text to settle on an exact "N-M z M"
-      var deadline = Date.now() + 12000;
-      while (Date.now() < deadline) {
-        await new Promise(function(r) { setTimeout(r, 500); });
-        var p2 = await parsePageCount(page);
-        if (p2.src === 'pagination') {
-          console.log('[gmail-stats] ' + label + ': ' + p2.count + ' (SPA jump-pagination)');
-          return p2.count;
-        }
+    try {
+      var total = await jumpToLastPageViaUrl(page, query, label);
+      if (total !== null && total !== undefined) {
+        console.log('[gmail-stats] ' + label + ': ' + total + ' (SPA url-bsearch)');
+        return total;
       }
-      // Give up on jump — report what we have
-      var pFinal = await parsePageCount(page);
-      console.log('[gmail-stats] ' + label + ': ' + pFinal.count + ' (SPA jump-timeout ' + pFinal.src + ')');
-      return pFinal.count;
+    } catch (e) {
+      console.log('[gmail-stats] ' + label + ': bsearch failed: ' + e.message);
     }
   }
 
