@@ -1,31 +1,42 @@
 /* ── Design tokens ───────────────────────────────────────── */
 :root {
-  --bg:       #0a0b0f;
-  --s1:       #0f1117;
-  --s2:       #161922;
-  --s3:       #1d2130;
-  --border:   rgba(255,255,255,.06);
-  --border2:  rgba(255,255,255,.11);
-  --text:     #dde1ec;
-  --muted:    #525a72;
-  --muted2:   #7a8299;
-  --accent:   #7c3aed;
-  --a2:       #a78bfa;
-  --green:    #34d399;
-  --red:      #f87171;
-  --r:        12px;
-  --r-sm:     8px;
+  /* Windows Vista "Aero" palette — light frosted glass over aurora blue */
+  --bg:       #0b2a4a;
+  --s1:       rgba(255,255,255,.66);
+  --s2:       rgba(236,245,252,.60);
+  --s3:       rgba(214,233,248,.74);
+  --border:   rgba(255,255,255,.55);
+  --border2:  rgba(120,170,215,.62);
+  --text:     #122a42;
+  --muted:    #4f6a86;
+  --muted2:   #33597d;
+  --accent:   #1f78d1;
+  --a2:       #53b0ef;
+  --green:    #2f9e44;
+  --red:      #d93838;
+  --r:        10px;
+  --r-sm:     6px;
   --ease:     cubic-bezier(.4,0,.2,1);
-  --t:        .17s var(--ease);
-  --shadow:   0 12px 40px rgba(0,0,0,.6);
+  --t:        .16s var(--ease);
+  --shadow:   0 14px 46px rgba(4,22,44,.45), 0 2px 6px rgba(4,22,44,.3);
+  --hi:       inset 0 1px 0 rgba(255,255,255,.85);
+  --gloss-light: linear-gradient(to bottom,#ffffff 0%,#f0f7fd 46%,#dcebf8 50%,#ecf5fc 100%);
+  --gloss-blue:  linear-gradient(to bottom,#8fccff 0%,#3f9ae8 46%,#1f74cf 50%,#4ba4ec 100%);
+  --gloss-green: linear-gradient(to bottom,#a6e9b5 0%,#52bf6c 46%,#2f9e44 50%,#5cc277 100%);
+  --gloss-red:   linear-gradient(to bottom,#ffb4b4 0%,#ec5a5a 46%,#cf2e2e 50%,#e86a6a 100%);
 }
 
 *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
 html,body { height:100%; }
 
 body {
-  font: 13.5px/1.6 'Inter',system-ui,-apple-system,sans-serif;
-  background: var(--bg);
+  font: 13.5px/1.6 'Segoe UI','Frutiger',Tahoma,system-ui,-apple-system,sans-serif;
+  background:
+    radial-gradient(130% 80% at 50% -20%, rgba(150,210,255,.55) 0%, rgba(80,160,230,.12) 40%, transparent 72%),
+    radial-gradient(90% 60% at 85% 115%, rgba(120,235,215,.30) 0%, transparent 60%),
+    radial-gradient(70% 55% at 10% 110%, rgba(90,140,255,.28) 0%, transparent 60%),
+    linear-gradient(160deg, #12385f 0%, var(--bg) 55%, #081f38 100%);
+  background-attachment: fixed;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
@@ -963,3 +974,207 @@ body.view { overflow: hidden; }
   50% { opacity: 1; }
 }
 .min-acct-status.is-loading { animation: pulse 1.4s ease-in-out infinite; }
+
+/* ════════════════════════════════════════════════════════════
+   WINDOWS VISTA "AERO" OVERLAY
+   Presentation-only override layer (cascade wins over the rules
+   above). Adds frosted-glass surfaces, glossy gradient buttons,
+   aurora depth and the Aero blues. No selector is removed, so all
+   existing markup / JS hooks keep working unchanged.
+════════════════════════════════════════════════════════════ */
+
+/* ── Floating glass window layout ── */
+#app { padding: 10px; gap: 10px; }
+
+#sidebar {
+  border-right: none;
+  border-radius: 12px;
+  background: linear-gradient(to bottom, rgba(26,64,104,.58), rgba(12,38,66,.66));
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.35);
+}
+#content {
+  border-radius: 12px;
+  background: linear-gradient(to bottom, rgba(255,255,255,.72), rgba(227,240,251,.66));
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgba(255,255,255,.6);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.85);
+}
+
+/* ── Sidebar: dark glass → light text + glossy logo/nav ── */
+.sidebar-logo { border-bottom: 1px solid rgba(255,255,255,.15); }
+.logo-icon {
+  background: var(--gloss-blue); color: #fff;
+  border: 1px solid rgba(255,255,255,.5);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 1px 3px rgba(0,0,0,.35);
+}
+.logo-text { color: #eaf5ff; text-shadow: 0 1px 2px rgba(0,0,0,.5); }
+.nav-item { color: #d6e9fa; text-shadow: 0 1px 1px rgba(0,0,0,.35); }
+.nav-item:hover {
+  background: linear-gradient(to bottom, rgba(255,255,255,.22), rgba(255,255,255,.08));
+  border: 1px solid rgba(255,255,255,.28); color: #fff;
+}
+.nav-item.active {
+  background: var(--gloss-blue); color: #fff;
+  border: 1px solid rgba(255,255,255,.5);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.65), 0 1px 4px rgba(0,0,0,.3);
+}
+.sidebar-footer { border-top: 1px solid rgba(255,255,255,.15); }
+.logout-btn-full {
+  background: linear-gradient(to bottom, rgba(255,255,255,.2), rgba(255,255,255,.06));
+  color: #e6f1fb; border: 1px solid rgba(255,255,255,.3);
+}
+.logout-btn-full:hover {
+  background: var(--gloss-red); color: #fff; border-color: rgba(255,255,255,.5);
+  text-shadow: 0 1px 1px rgba(0,0,0,.3);
+}
+
+/* ── Topbar as glass titlebar ── */
+#topbar {
+  border-bottom: 1px solid rgba(120,170,215,.4);
+  background: linear-gradient(to bottom, rgba(255,255,255,.75), rgba(224,238,250,.55));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+}
+.breadcrumb { text-transform: uppercase; }
+.breadcrumb span { color: #0e3a66; }
+
+/* ── Headings ── */
+.page-header h1, .page-header h2 { color: #0e3a66; text-shadow: 0 1px 0 rgba(255,255,255,.7); }
+
+/* ── Glossy glass panels ── */
+.add-box, .acct-card, .link-result, .stat-tile {
+  box-shadow: 0 6px 18px rgba(4,22,44,.22), var(--hi);
+}
+.acct-card:hover { border-color: var(--accent); box-shadow: 0 10px 26px rgba(4,22,44,.3), var(--hi); }
+.acct-card.captured { background: linear-gradient(180deg, rgba(166,233,181,.5), rgba(255,255,255,.8) 72px); }
+.acct-card-header:hover { background: rgba(255,255,255,.35); }
+.stat-val { color: #0e3a66; text-shadow: 0 1px 0 rgba(255,255,255,.6); }
+.captured-badge {
+  background: var(--gloss-green); color: #124a1e;
+  border: 1px solid rgba(255,255,255,.5); box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
+}
+.acct-avatar-placeholder {
+  background: var(--gloss-blue);
+  border: 1px solid rgba(255,255,255,.6);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 1px 4px rgba(0,0,0,.25);
+  text-shadow: 0 1px 1px rgba(0,0,0,.35);
+}
+.info-field input[readonly] { background: rgba(224,236,247,.6); }
+
+/* ── Inputs ── */
+input {
+  box-shadow: inset 0 1px 2px rgba(4,22,44,.12);
+}
+input:focus { box-shadow: 0 0 0 3px rgba(83,176,239,.4), inset 0 1px 2px rgba(4,22,44,.1); background: #fff; }
+
+/* ── Glossy buttons (the Aero signature) ── */
+button {
+  background: var(--gloss-blue);
+  border: 1px solid rgba(255,255,255,.5);
+  text-shadow: 0 1px 1px rgba(0,0,0,.3);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 1px 3px rgba(4,22,44,.3);
+}
+button::after { background: linear-gradient(to bottom, rgba(255,255,255,.35), rgba(255,255,255,0) 55%); opacity: 0; }
+button:hover::after { opacity: 1; }
+button:hover { filter: brightness(1.05); }
+button:active { transform: translateY(1px); box-shadow: inset 0 2px 4px rgba(4,22,44,.35); }
+
+.btn-primary, .btn-copy { background: var(--gloss-blue); border: 1px solid rgba(255,255,255,.5); text-shadow: 0 1px 1px rgba(0,0,0,.3); box-shadow: var(--hi); }
+.btn-view { background: var(--gloss-red); border: 1px solid rgba(255,255,255,.5); text-shadow: 0 1px 1px rgba(0,0,0,.3); box-shadow: var(--hi); }
+.btn-save { background: var(--gloss-green); color: #fff; border: 1px solid rgba(255,255,255,.5); text-shadow: 0 1px 1px rgba(0,0,0,.3); box-shadow: var(--hi); }
+.btn-dl, .ghost-btn, .btn-ghost-sm, .btn-mail-stats, .plat-btn, .acct-chip-btn, .acct-chip-del, .sort-select {
+  background: var(--gloss-light); color: #123a60; border: 1px solid var(--border2); box-shadow: var(--hi); font-weight: 600;
+}
+.btn-dl:hover, .ghost-btn:hover, .btn-ghost-sm:hover, .btn-mail-stats:hover, .plat-btn:hover, .acct-chip-btn:hover, .sort-select:hover { filter: brightness(1.05); }
+.btn-del { background: var(--gloss-light); color: var(--red); border: 1px solid rgba(217,56,56,.4); box-shadow: var(--hi); }
+.btn-del:hover { background: var(--gloss-red); color: #fff; border-color: rgba(255,255,255,.5); text-shadow: 0 1px 1px rgba(0,0,0,.3); }
+.acct-chip-btn.active { background: var(--gloss-blue); color: #fff; border-color: rgba(255,255,255,.5); text-shadow: 0 1px 1px rgba(0,0,0,.3); }
+.acct-chip { box-shadow: 0 1px 3px rgba(4,22,44,.25); }
+.acct-chip-del:hover { background: var(--gloss-red); color: #fff; border-color: rgba(255,255,255,.5); }
+
+/* ── Platform icon chips ── */
+.plat-icon { border: 1px solid rgba(255,255,255,.6); box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 1px 2px rgba(4,22,44,.2); }
+.plat-fb { background: linear-gradient(to bottom,#5e9bf5,#2b61c4); color: #fff; }
+.plat-gm { background: linear-gradient(to bottom,#ff8a8a,#d93838); color: #fff; }
+.plat-ig { background: linear-gradient(to bottom,#f98bd0,#c1399b); color: #fff; }
+.plat-x  { background: linear-gradient(to bottom,#4a4a4a,#111); color: #fff; }
+
+/* ── Generate-tab minimal list on light glass ── */
+.created-accounts-head { color: var(--muted2); border-bottom: 1px solid rgba(120,170,215,.35); }
+.min-acct { border-bottom: 1px solid rgba(120,170,215,.25); }
+.min-acct:hover { background: rgba(255,255,255,.4); }
+/* keep the minimal-list name/delete flat — they are <button>s but must
+   not pick up the glossy default-button skin */
+.min-acct-name, .min-acct-del {
+  background: transparent; border: 0; box-shadow: none; text-shadow: none;
+}
+.min-acct-name { color: var(--text); }
+.min-acct-name:active, .min-acct-del:active { transform: none; }
+.min-acct-del:hover { filter: none; }
+
+/* ── Login as glossy Aero dialog ── */
+#loginScreen { background: transparent; }
+.login-box {
+  position: relative;
+  background: linear-gradient(to bottom, rgba(255,255,255,.92) 0%, rgba(234,245,253,.82) 48%, rgba(210,231,247,.80) 100%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  box-shadow: var(--shadow), var(--hi);
+}
+.login-box::before {
+  content:''; position:absolute; left:1px; right:1px; top:1px; height:46%;
+  border-radius: 13px 13px 50% 50%/13px 13px 22px 22px;
+  background: linear-gradient(to bottom, rgba(255,255,255,.75), rgba(255,255,255,0));
+  pointer-events:none;
+}
+.login-box > * { position: relative; }
+.login-logo {
+  -webkit-text-fill-color: #1f78d1; color: #1f78d1;
+  text-shadow: 0 0 18px rgba(83,176,239,.8), 0 1px 0 #fff;
+}
+.login-box h1 { color: #0e3a66; text-shadow: 0 1px 0 rgba(255,255,255,.7); }
+
+/* ── Live logs: Aero blue console ── */
+.logs-list {
+  background: linear-gradient(to bottom, #04121f, #020a12);
+  border: 1px solid rgba(120,170,215,.55);
+  box-shadow: 0 8px 24px rgba(4,22,44,.4), inset 0 0 40px rgba(0,120,255,.1), inset 0 1px 0 rgba(255,255,255,.15);
+}
+.logs-list::after {
+  background: repeating-linear-gradient(to bottom, rgba(120,200,255,.03) 0px, rgba(120,200,255,.03) 1px, transparent 1px, transparent 3px);
+}
+.logs-list::before { color: #5ad0ff; }
+.log-time { color: #3a7bb0; }
+.log-msg  { color: #7fd3ff; text-shadow: 0 0 6px rgba(90,200,255,.4); }
+.log-entry.log-info .log-msg, .log-entry.log-open .log-msg { color: #7fd3ff; }
+
+/* ── Mail-stats modal / toasts: light glass ── */
+.mail-stats-modal {
+  background: linear-gradient(to bottom, rgba(255,255,255,.95), rgba(228,241,252,.88));
+  -webkit-backdrop-filter: blur(16px) saturate(140%); backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid var(--border2);
+}
+.mail-stats-header {
+  background: linear-gradient(to bottom, rgba(255,255,255,.8), rgba(222,237,250,.6));
+  border-bottom: 1px solid rgba(120,170,215,.4);
+  border-radius: 12px 12px 0 0; color: #0e3a66;
+}
+.mail-stats-close { background: none; box-shadow: none; text-shadow: none; }
+.mail-stats-close::after { display: none; }
+.mail-stats-close:hover { filter: none; }
+.stats-table td { border-bottom: 1px solid rgba(120,170,215,.3); }
+.stats-table td.stats-num { color: var(--accent); }
+.mail-stats-overlay { background: rgba(8,24,44,.55); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+
+.toast {
+  background: linear-gradient(to bottom, rgba(255,255,255,.96), rgba(228,241,252,.9));
+  -webkit-backdrop-filter: blur(12px) saturate(140%); backdrop-filter: blur(12px) saturate(140%);
+  border: 1px solid var(--border2);
+  color: #122a42;
+  box-shadow: var(--shadow), var(--hi);
+}
