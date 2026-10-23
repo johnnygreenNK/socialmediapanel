@@ -240,18 +240,18 @@ export default async function viewerRoutes(app) {
     // DOM changes), so the admin would stare at the stale login form
     // for 60-120s even though the new screen is already there.
     //
-    // Heartbeat: force a capture every 2s regardless of repaints. Users
-    // see any DOM-level change (modal, redirect, QR code) within 2s,
-    // not when Chrome decides a repaint is worth sending.
+    // Heartbeat: force a capture every 1.5s regardless of repaints. Users
+    // see any DOM-level change (modal, redirect, QR code) within 1.5s.
+    // Shorter cadence than 2s because FB UI transitions are fast.
+    //
+    // NOTE: we do NOT listen to page.on('response') — Facebook pumps
+    // dozens of XHR responses per second (realtime, polling, telemetry);
+    // triggering captureAndSend on each one floods the CDP command queue
+    // and starves input events (click/keyboard), so the user sees
+    // "clicking does nothing" even though the bot IS alive.
     const heartbeatTimer = setInterval(() => {
       if (socket.readyState === socket.OPEN) captureAndSend();
-    }, 2000);
-
-    // Also force a capture whenever the page's network becomes active —
-    // XHR responses frequently carry the "login step N" update even
-    // when the compositor stays still.
-    const networkHandler = () => captureAndSend();
-    page.on('response', networkHandler);
+    }, 1500);
 
     // --- inbound: input events ---
     onMessage = async (raw) => {
@@ -329,7 +329,6 @@ export default async function viewerRoutes(app) {
       clearInterval(heartbeatTimer);
       clearTimeout(navDebounce);
       page.off('framenavigated', navHandler);
-      page.off('response', networkHandler);
       try { cdp.off('Page.screencastFrame', onFrame); } catch { /* ignore */ }
       try {
         await cdp.send('Page.stopScreencast');

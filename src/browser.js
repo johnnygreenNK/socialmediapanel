@@ -363,38 +363,51 @@ async function launch(accountId, adminIp) {
   // beacons that we don't need for a login flow — stripping them makes
   // the page interactive 3-5x faster, especially over mobile proxies
   // where every extra round-trip hurts.
+  // Smart route blocker:
+  // - URL-e flow logowania (login/checkpoint/2FA/code) ZAWSZE przechodzą
+  //   bez żadnych blokad — to krytyczny moment, nie ryzykujemy niczego
+  // - Pozostałe requesty: blokuj tracking + ciężkie obrazy feed/avatary
+  //   (po zalogowaniu) żeby strona ładowała się szybciej przez proxy
   await context.route('**/*', (route) => {
     const req = route.request();
     const url = req.url();
     const type = req.resourceType();
 
-    // Resource-type based blocking — tylko video, nic więcej.
-    // UWAGA: nie blokuj obrazów! Facebook/Google wysyłają QR code dla 2FA
-    // jako obraz (np. facebook.com/.../qr/...), captcha też jest obrazem.
-    // Fonty też są niekiedy używane do rozpoznania UI elementów, więc tez
-    // zostawiamy — kilka extra round-tripów warte poprawnego działania 2FA.
+    // SAFE ZONE: wszystko związane z logowaniem i 2FA — przepuść bez pytania.
+    const isLoginFlow = /\/(login|checkpoint|two_factor|two[-_ ]step|security|approvals|code|verif|identif|recover|totp|otp)\b/i.test(url);
+    if (isLoginFlow) {
+      return route.continue();
+    }
+
+    // Video streaming — zawsze blokuj (feed FB, Instagram reels)
     if (type === 'media') {
-      // Blokuj TYLKO video/audio streaming (feed FB), nie wszystko
       if (/videoplayback|\.mp4(?:$|\?)|\.webm(?:$|\?)|\.m3u8(?:$|\?)/.test(url)) {
         return route.abort();
       }
     }
 
-    // Blocked list — TYLKO oczywiste tracking i analytics, które nie
-    // uczestniczą w żadnym flow logowania/2FA. UWAŻANIE:
-    // - NIE blokuj graphqlbatch (FB flow logowania przez niego poleci)
-    // - NIE blokuj webstorage (sync stanu sesji)
-    // - NIE blokuj ajax/mercury (może nieść 2FA push)
+    // Obrazki feed FB (fbcdn.net scontent) — blokuj (tylko po logowaniu
+    // widok feed; na login/checkpoint już przeszliśmy wcześniej przez
+    // SAFE ZONE). Ale: NIE blokuj obrazów z strony logowania (login path)
+    // ani z Google (dla Gmail/accounts.google.com).
+    if (type === 'image' && /scontent[^.]*\.fbcdn\.net|scontent\.cdninstagram/.test(url)) {
+      return route.abort();
+    }
+
+    // Blokady tracking — zawsze bezpieczne
     const blocked = [
-      // Facebook / Meta — WYŁĄCZNIE tracking, nie flow
-      /facebook\.com\/tr(\/|\?|$)/,          // Facebook Pixel (zewnętrzny tracking)
-      /facebook\.com\/plugins\//,             // social plugins (like/share buttons)
-      /facebook\.com\/.*\/qpl\//,             // quick perf logger (tylko metrics)
-      /facebook\.com\/.*\/ls_report/,         // live streaming perf reports
-      /connect\.facebook\.net/,               // SDK dla third-party stron
-      /falco\.facebook/,                      // Falco telemetry
-      // Instagram — tylko tracking
+      // Facebook / Meta tracking
+      /facebook\.com\/tr(\/|\?|$)/,
+      /facebook\.com\/plugins\//,
+      /facebook\.com\/.*\/qpl\//,
+      /facebook\.com\/.*\/ls_report/,
+      /facebook\.com\/.*\/ajax\/bz/,
+      /facebook\.com\/.*\/graphqlbatch/,   // BLOKUJ ponownie — ale SAFE ZONE wyłapie login flow
+      /connect\.facebook\.net/,
+      /falco\.facebook/,
+      // Instagram
       /instagram\.com\/.*\/logging/,
+      /instagram\.com\/graphql\/batch/,
       // Google telemetria (NIE Gmail)
       /google-analytics\.com/,
       /googletagmanager\.com/,
@@ -404,7 +417,7 @@ async function launch(accountId, adminIp) {
       // Twitter/X
       /\/i\/jot\//,
       /api\.twitter\.com\/1\.1\/jot/,
-      // 3rd-party trackery (nigdy nie są potrzebne do logowania)
+      // 3rd-party trackery
       /segment\.(io|com)/,
       /mixpanel\.com/,
       /amplitude\.com/,
