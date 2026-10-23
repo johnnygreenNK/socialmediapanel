@@ -818,3 +818,61 @@ body.view { overflow: hidden; }
   25%{transform:translateX(-6px)}
   75%{transform:translateX(6px)}
 }
+
+/* ─── Generate tab: minimal accounts list ──────────────────────── */
+.created-accounts { margin-top: 32px; }
+.created-accounts-head {
+  font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 12px; padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.minimal-acct-list { display: flex; flex-direction: column; }
+.min-acct {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.15s;
+}
+.min-acct:hover { background: rgba(255,255,255,0.02); }
+.min-acct-name {
+  flex: 1; text-align: left; background: transparent; border: 0;
+  color: var(--text); font-size: 14px; cursor: pointer; padding: 0;
+  font-family: inherit;
+}
+.min-acct-name:hover { color: var(--accent); }
+.min-acct-status {
+  font-size: 12px; letter-spacing: 0.3px;
+  min-width: 130px; text-align: right;
+}
+.min-acct-status.is-connected { color: #22c55e; }
+.min-acct-status.is-disconnected { color: #6b7280; }
+.min-acct-del {
+  background: transparent; border: 0; color: var(--muted);
+  cursor: pointer; font-size: 18px; width: 24px; padding: 0;
+  opacity: 0.4; transition: opacity 0.15s, color 0.15s;
+}
+.min-acct-del:hover { opacity: 1; color: var(--red); }
+.min-acct-empty {
+  padding: 24px; text-align: center; color: var(--muted);
+  font-size: 13px; font-style: italic;
+}
+
+/* ─── Proxy field hint ──────────────────────────── */
+.field-opt { color: var(--muted); font-weight: 400; font-size: 12px; }
+.field-hint { font-size: 11px; color: var(--muted); margin-top: 4px; margin-bottom: 0; }
+
+/* ─── Sidebar logout button (replaces user card) ─────────────── */
+.logout-btn-full {
+  width: 100%; padding: 10px 16px;
+  background: transparent; color: var(--muted);
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;
+  cursor: pointer; font-size: 13px; letter-spacing: 0.3px;
+  transition: all 0.15s;
+}
+.logout-btn-full:hover {
+  background: rgba(239,68,68,0.08); color: var(--red);
+  border-color: rgba(239,68,68,0.3);
+}
+
+/* Hide old sort controls if any remain */
+.sort-controls { display: none !important; }

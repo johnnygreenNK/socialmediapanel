@@ -83,7 +83,11 @@ async function launch(accountId, adminIp) {
   const dir = profilePath(accountId);
   await fsp.mkdir(dir, { recursive: true });
 
-  const useProxy = Boolean(config.proxyServer) && account.useProxy !== false;
+  // Per-account proxy overrides global config. useProxy=false disables both.
+  const accProxyServer = account.proxyServer || config.proxyServer;
+  const accProxyUser   = account.proxyServer ? (account.proxyUsername || '') : config.proxyUsername;
+  const accProxyPass   = account.proxyServer ? (account.proxyPassword || '') : config.proxyPassword;
+  const useProxy = Boolean(accProxyServer) && account.useProxy !== false;
   // Match the browser's displayed language to whoever is actually watching
   // it through the panel (the admin's own IP), not to the account
   // session's own exit IP — the admin wants to read the page in their own
@@ -120,9 +124,9 @@ async function launch(accountId, adminIp) {
     // instead of fighting a proxy that won't let Chrome through to begin with.
     proxy: useProxy
       ? {
-          server: config.proxyServer,
-          username: config.proxyUsername || undefined,
-          password: config.proxyPassword || undefined,
+          server: accProxyServer,
+          username: accProxyUser || undefined,
+          password: accProxyPass || undefined,
         }
       : undefined,
     locale,

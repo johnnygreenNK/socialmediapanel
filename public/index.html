@@ -33,14 +33,7 @@
       </button>
     </nav>
     <div class="sidebar-footer">
-      <div class="sidebar-user">
-        <div class="user-avatar">N</div>
-        <div class="user-info">
-          <div class="user-name">Admin</div>
-          <div class="user-status"><span class="dot-green"></span>Online</div>
-        </div>
-      </div>
-      <button id="logoutBtn" class="logout-btn" title="Wyloguj">⏻</button>
+      <button id="logoutBtn" class="logout-btn-full" title="Wyloguj">⏻ Wyloguj</button>
     </div>
   </aside>
 
@@ -48,10 +41,6 @@
     <div id="topbar">
       <div class="breadcrumb">
         MY WORKSPACE / <span id="crumb-label">Generate LINK</span>
-      </div>
-      <div class="topbar-right">
-        <span id="topbar-clock"></span>
-        <span class="badge-online">● ONLINE</span>
       </div>
     </div>
 
@@ -62,33 +51,21 @@
           <h1>Generate LINK</h1>
           <p class="page-sub">Dodaj nowe konto. Linki do istniejących znajdziesz w zakładce Accounts.</p>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;">
-          <div class="sort-controls">
-            <label class="sort-label">Sortuj:</label>
-            <select id="genSort" class="sort-select">
-              <option value="default">Domyślnie</option>
-              <option value="name-asc">Nazwa A-Z</option>
-              <option value="name-desc">Nazwa Z-A</option>
-              <option value="email-asc">Email A-Z</option>
-              <option value="email-desc">Email Z-A</option>
-              <option value="platform">Platforma</option>
-            </select>
-          </div>
-          <button id="addBtn" class="btn-primary">+ Dodaj konto</button>
-        </div>
       </div>
 
-      <div id="genAccounts" class="account-grid"></div>
-
-      <div id="addBox" class="add-box" hidden>
+      <div class="add-box">
         <div class="add-box-header">
           <span class="add-step-label">Nowe konto</span>
-          <button id="addCancel" class="btn-ghost-sm">✕ Anuluj</button>
         </div>
         <div class="add-fields">
           <div class="field-group">
             <label class="field-label">Imię / nazwa</label>
             <input id="addName" class="field-input" placeholder="np. Jan Kowalski"/>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Proxy <span class="field-opt">(opcjonalnie)</span></label>
+            <input id="addProxy" class="field-input" placeholder="np. socks5://user:pass@host:1080 lub http://host:8080"/>
+            <p class="field-hint">Zostaw puste, aby użyć domyślnego proxy serwera (lub bezpośrednio dla Gmaila).</p>
           </div>
           <div class="field-group">
             <label class="field-label">Platforma</label>
@@ -113,6 +90,11 @@
           </div>
         </div>
       </div>
+
+      <div class="created-accounts">
+        <div class="created-accounts-head">Accounts created</div>
+        <div id="genAccounts" class="minimal-acct-list"></div>
+      </div>
     </div>
 
     <!-- ── TAB: Accounts ── -->
@@ -121,17 +103,6 @@
         <div>
           <h1>Accounts</h1>
           <p class="page-sub">Szczegóły kont i zarządzanie sesjami.</p>
-        </div>
-        <div class="sort-controls">
-          <label class="sort-label">Sortuj:</label>
-          <select id="acctSort" class="sort-select">
-            <option value="default">Domyślnie</option>
-            <option value="name-asc">Nazwa A-Z</option>
-            <option value="name-desc">Nazwa Z-A</option>
-            <option value="email-asc">Email A-Z</option>
-            <option value="email-desc">Email Z-A</option>
-            <option value="platform">Platforma</option>
-          </select>
         </div>
       </div>
       <div id="acctList" class="acct-list"></div>
@@ -193,14 +164,6 @@
 
 <script src="/app.js"></script>
 <script>
-  /* ── Clock ── */
-  function updateClock() {
-    const now = new Date();
-    document.getElementById('topbar-clock').textContent =
-      now.toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-  }
-  setInterval(updateClock, 1000);
-  updateClock();
   document.getElementById('log-start-time').textContent = new Date().toLocaleTimeString('pl-PL');
 
   /* ── Session uptime ── */

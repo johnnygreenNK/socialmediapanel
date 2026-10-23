@@ -54,25 +54,36 @@ export default async function panelRoutes(app) {
 
   app.post('/api/accounts', async (req, reply) => {
     if (checkPin(req, reply) === false) return;
-    const { id, label, startUrl } = req.body || {};
+    const { id, label, startUrl, proxyUrl } = req.body || {};
     if (!id || !label || !startUrl)
       return reply.code(400).send({ error: 'id, label and startUrl are required' });
     if (!/^[a-z0-9_-]+$/.test(id))
       return reply.code(400).send({ error: 'id must be lowercase letters, digits, _ or -' });
-    // Nowe konto = czysty profil. Bez tego, jeśli ktoś wcześniej miał
-    // konto o tym samym id (lub profil z poprzedniej instalacji), nowe
-    // konto dziedziczy jego cookies — Gmail/Facebook wyglądają na
-    // "już zalogowane".
+    // Nowe konto = czysty profil (zapobiega dziedziczeniu cookies).
     const existed = Boolean(await getAccount(id));
     if (!existed) {
       await browser.stop(id).catch(() => {});
       const wiped = await browser.wipeProfile(id);
       if (wiped) console.log('[panel] wiped leftover profile for new account:', id);
     }
-    // The proxy's anti-abuse throttling silently hangs real-Chrome traffic
-    // to any Google domain (confirmed live) — route those direct instead.
-    const isGoogle = /(^|\.)google\.com$/.test(new URL(startUrl).hostname);
-    await saveAccount({ id, label, startUrl, ...(isGoogle ? { useProxy: false } : {}) });
+    // Parse optional per-account proxy. Accepts
+    //   scheme://[user:pass@]host:port  (http, https, socks4, socks5)
+    let proxyFields = {};
+    if (proxyUrl) {
+      const m = String(proxyUrl).trim().match(/^(https?|socks[45]?):\/\/(?:([^:@]+):([^@]+)@)?([^:@\s]+):(\d{1,5})$/i);
+      if (!m) return reply.code(400).send({ error: 'invalid_proxy_url' });
+      proxyFields = {
+        proxyServer: `${m[1].toLowerCase()}://${m[4]}:${m[5]}`,
+        proxyUsername: m[2] || '',
+        proxyPassword: m[3] || '',
+        useProxy: true,
+      };
+    } else {
+      // Dla Gmaila bez własnego proxy — bezpośrednio (proxy serwera dławi Google).
+      const isGoogle = /(^|\.)google\.com$/.test(new URL(startUrl).hostname);
+      if (isGoogle) proxyFields = { useProxy: false };
+    }
+    await saveAccount({ id, label, startUrl, ...proxyFields });
     await browser.start(id, req.ip).catch(() => {});
     return { ok: true, id };
   });

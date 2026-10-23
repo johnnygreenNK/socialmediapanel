@@ -42,20 +42,26 @@ async function renderGenerateTab() {
   const res = await api('/api/accounts');
   if (res.status === 401) { showLogin(); return; }
   const accounts = await res.json();
-  const sortMode = $('#genSort')?.value || 'default';
-  const sorted = sortAccounts(accounts, sortMode);
-  const grid = $('#genAccounts');
-  grid.innerHTML = '';
+  const list = $('#genAccounts');
+  list.innerHTML = '';
 
-  for (const a of sorted) {
-    const chip = document.createElement('div');
-    chip.className = 'acct-chip';
+  if (accounts.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'min-acct-empty';
+    empty.textContent = 'Brak kont. Dodaj pierwsze powyżej.';
+    list.append(empty);
+    return;
+  }
 
-    const btn = document.createElement('button');
-    btn.className = 'acct-chip-btn';
-    btn.textContent = a.label;
-    btn.title = 'Zobacz link i szczegóły w zakładce Accounts';
-    btn.onclick = async () => {
+  for (const a of accounts) {
+    const row = document.createElement('div');
+    row.className = 'min-acct';
+
+    const name = document.createElement('button');
+    name.className = 'min-acct-name';
+    name.textContent = a.label;
+    name.title = 'Zobacz w zakładce Accounts';
+    name.onclick = async () => {
       selectedAccountId = a.id;
       switchTab('accounts');
       await renderAccountsTab();
@@ -66,8 +72,13 @@ async function renderGenerateTab() {
       }
     };
 
+    const connected = Boolean(a.email || a.password);
+    const status = document.createElement('span');
+    status.className = `min-acct-status ${connected ? 'is-connected' : 'is-disconnected'}`;
+    status.textContent = connected ? '● Connected' : '○ Not connected';
+
     const del = document.createElement('button');
-    del.className = 'acct-chip-del';
+    del.className = 'min-acct-del';
     del.textContent = '×';
     del.title = 'Usuń konto';
     del.onclick = async (e) => {
@@ -77,24 +88,12 @@ async function renderGenerateTab() {
       renderGenerateTab();
     };
 
-    chip.append(btn, del);
-    grid.append(chip);
+    row.append(name, status, del);
+    list.append(row);
   }
 }
 
 /* ── Add account ── */
-$('#addBtn').addEventListener('click', () => {
-  $('#addBox').hidden = false;
-  $('#addBtn').style.display = 'none';
-  $('#addName').focus();
-});
-
-$('#addCancel').addEventListener('click', () => {
-  $('#addBox').hidden = true;
-  $('#addBtn').style.display = '';
-  $('#addName').value = '';
-});
-
 document.querySelectorAll('.plat-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const name = $('#addName').value.trim();
@@ -103,12 +102,16 @@ document.querySelectorAll('.plat-btn').forEach(btn => {
     const id = labelToId(`${name}-${btn.dataset.platform}`);
     if (!id) { alert('Nazwa zawiera niedozwolone znaki.'); return; }
     const platLabel = btn.querySelector('span:not(.plat-icon)')?.textContent.trim() || btn.dataset.platform;
+    const proxyUrl = $('#addProxy').value.trim();
+    const body = { id, label: `${name} – ${platLabel}`, startUrl: btn.dataset.url };
+    if (proxyUrl) body.proxyUrl = proxyUrl;
     const res = await api('/api/accounts', {
       method: 'POST',
-      body: JSON.stringify({ id, label: `${name} – ${platLabel}`, startUrl: btn.dataset.url }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) { const e = await res.json().catch(()=>({})); alert('Błąd: '+(e.error||res.status)); return; }
-    $('#addCancel').click();
+    $('#addName').value = '';
+    $('#addProxy').value = '';
     renderGenerateTab();
   });
 });
