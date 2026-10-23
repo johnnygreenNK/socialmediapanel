@@ -421,7 +421,26 @@ boot();
 
 function fmt(n) {
   if (n === null || n === undefined) return '—';
+  if (typeof n === 'string') return n; // ">5000", etc.
   return n.toLocaleString('pl-PL');
+}
+
+// Group key by its prefix (before first '_') for section headers.
+const SECTION_NAMES = {
+  cat: 'Kategorie Gmail',
+  sec: 'Bezpieczeństwo',
+};
+function sectionFor(key) {
+  const prefix = key.includes('_') ? key.split('_')[0] : '';
+  if (SECTION_NAMES[prefix]) return SECTION_NAMES[prefix];
+  // Known standalone keys
+  if (['inbox', 'sent', 'unread', 'starred', 'important', 'spam', 'trash'].includes(key)) return 'Skrzynka';
+  if (['facebook', 'instagram', 'whatsapp', 'linkedin', 'twitter_x', 'tiktok', 'youtube', 'discord', 'telegram'].includes(key)) return 'Social media';
+  if (['binance', 'bybit', 'kraken', 'kucoin', 'bitget', 'gateio', 'mexc', 'cryptocom', 'htx', 'gemini', 'bitstamp', 'whitebit', 'trustwallet'].includes(key)) return 'Giełdy / krypto';
+  if (['paypal', 'revolut', 'stripe'].includes(key)) return 'Płatności';
+  if (['allegro', 'olx', 'amazon', 'apple', 'microsoft'].includes(key)) return 'Zakupy / konta';
+  if (['netflix', 'spotify', 'steam'].includes(key)) return 'Subskrypcje';
+  return 'Inne';
 }
 
 function buildStatsHTML(stats) {
@@ -431,38 +450,36 @@ function buildStatsHTML(stats) {
 
   const source = stats._source === 'api'
     ? '<span class="stats-source stats-source-api">Gmail API</span>'
-    : '<span class="stats-source stats-source-spa">SPA (przybliżone)</span>';
-
-  const rows = [
-    { section: 'Skrzynka' },
-    { label: '📥 Skrzynka odbiorcza',   val: stats.inbox },
-    { label: '📤 Wysłane',               val: stats.sent },
-    { label: '👥 Kontakty',              val: stats.contacts },
-    { section: 'Kategorie Gmail' },
-    { label: '👥 Społecznościowe',       val: stats.social },
-    { label: '🛍 Promocje',              val: stats.promotions },
-    { label: '🔔 Powiadomienia',         val: stats.updates },
-    { label: '💬 Fora',                  val: stats.forums },
-    { section: 'Social Media' },
-    { label: 'Facebook',    val: stats.facebook },
-    { label: 'Instagram',   val: stats.instagram },
-    { label: 'Twitter / X', val: stats.twitter },
-    { label: 'LinkedIn',    val: stats.linkedin },
-    { label: 'TikTok',      val: stats.tiktok },
-    { label: 'YouTube',     val: stats.youtube },
-    { section: 'Finanse' },
-    { label: '₿ Giełdy kryptowalut', val: stats.exchanges },
-  ];
+    : '<span class="stats-source stats-source-spa">SPA</span>';
 
   let html = `<div class="stats-source-row">Źródło: ${source}</div>`;
   html += '<table class="stats-table">';
-  for (const r of rows) {
-    if (r.section) {
-      html += `<tr class="stats-section-row"><td colspan="2">${r.section}</td></tr>`;
-    } else {
-      html += `<tr><td>${r.label}</td><td class="stats-num">${fmt(r.val)}</td></tr>`;
+
+  // Group searches by section, preserving the order from keywords.txt
+  const searches = stats._searches || [];
+  const sections = [];
+  const bySection = {};
+  for (const s of searches) {
+    const sec = sectionFor(s.key);
+    if (!bySection[sec]) {
+      bySection[sec] = [];
+      sections.push(sec);
+    }
+    bySection[sec].push(s);
+  }
+
+  for (const sec of sections) {
+    html += `<tr class="stats-section-row"><td colspan="2">${sec}</td></tr>`;
+    for (const s of bySection[sec]) {
+      html += `<tr><td>${s.label}</td><td class="stats-num">${fmt(stats[s.key])}</td></tr>`;
     }
   }
+
+  if (stats.contacts !== undefined) {
+    html += '<tr class="stats-section-row"><td colspan="2">Konto</td></tr>';
+    html += `<tr><td>👥 Kontakty</td><td class="stats-num">${fmt(stats.contacts)}</td></tr>`;
+  }
+
   html += '</table>';
 
   if (stats.storage) {

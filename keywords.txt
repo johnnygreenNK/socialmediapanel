@@ -1,0 +1,76 @@
+# Konfigurowalne wyszukiwania statystyk Gmaila.
+# Format: klucz | Etykieta | zapytanie_gmail
+# - linie zaczynające się od # to komentarze, puste linie pomijane
+# - klucz musi być unikalny (bez spacji), bo trafia do JSON-a jako nazwa pola
+# - Etykieta pojawi się w panelu i powiadomieniu Telegramu
+# - zapytanie_gmail = pełna składnia Gmaila: from:, to:, subject:, is:, in:,
+#   category:, newer_than:, OR, AND, nawiasy itd.
+# - skopiuj ten plik do DATA_DIR/keywords.txt żeby edytować bez konfliktów git
+#
+# Dla >5000 wiadomości pokazujemy ">5000" (szybciej); dla <5000 — dokładną liczbę.
+
+# ── Podstawowe ──────────────────────────────────────────────────────────
+inbox       | Skrzynka odbiorcza   | in:inbox
+sent        | Wysłane              | in:sent
+unread      | Nieprzeczytane       | is:unread
+starred     | Oznaczone gwiazdką   | is:starred
+important   | Ważne                | is:important
+spam        | Spam                 | in:spam
+trash       | Kosz                 | in:trash
+
+# ── Kategorie Gmaila ────────────────────────────────────────────────────
+cat_social     | Kat. Społecznościowe | category:social
+cat_promotions | Kat. Promocje        | category:promotions
+cat_updates    | Kat. Powiadomienia   | category:updates
+cat_forums     | Kat. Fora            | category:forums
+
+# ── Facebook / Meta (tylko oficjalne domeny) ────────────────────────────
+facebook  | Facebook  | from:(facebookmail.com OR notification+*@facebookmail.com OR noreply@facebookmail.com OR security@facebookmail.com)
+instagram | Instagram | from:(mail.instagram.com OR security@mail.instagram.com)
+whatsapp  | WhatsApp  | from:(whatsapp.com OR noreply@whatsapp.com)
+
+# ── Pozostałe social media ──────────────────────────────────────────────
+linkedin  | LinkedIn  | from:(e.linkedin.com OR linkedin.com OR bounce.linkedin.com)
+twitter_x | Twitter/X | from:(x.com OR twitter.com OR info@x.com OR info@twitter.com)
+tiktok    | TikTok    | from:(tiktok.com OR noreply@tiktok.com OR account-update@tiktok.com)
+youtube   | YouTube   | from:(youtube.com OR noreply@youtube.com OR no-reply@youtube.com)
+discord   | Discord   | from:(discord.com OR noreply@discord.com)
+telegram  | Telegram  | from:(telegram.org OR noreply@telegram.org)
+
+# ── Giełdy kryptowalut ──────────────────────────────────────────────────
+binance      | Binance      | from:(binance.com OR directmail.binance.com OR mail.binance.com OR post.binance.com)
+bybit        | Bybit        | from:(bybit.com OR noreply@bybit.com OR noreply@mail.bybit.com)
+kraken       | Kraken       | from:(kraken.com OR noreply@mail.kraken.com)
+kucoin       | KuCoin       | from:(kucoin.com OR mail.kucoin.com OR noreply@kucoin.com)
+bitget       | Bitget       | from:(bitget.com OR mail.bitget.com OR noreply@mail.bitget.com)
+gateio       | Gate.io      | from:(gate.io OR mail.gate.io OR noreply@mail.gate.io)
+mexc         | MEXC         | from:(mexc.com OR mexc.co OR mail.mexc.com OR noreply@mexc.com)
+cryptocom    | Crypto.com   | from:(crypto.com OR contact@crypto.com OR noreply@crypto.com)
+htx          | HTX (Huobi)  | from:(htx.com OR huobi.com OR huobigroup.com OR mail.htx.com)
+gemini       | Gemini       | from:(gemini.com OR support@gemini.com OR noreply@gemini.com)
+bitstamp     | Bitstamp     | from:(bitstamp.net OR noreply@bitstamp.net)
+whitebit     | WhiteBIT     | from:(whitebit.com OR noreply@whitebit.com)
+trustwallet  | Trust Wallet | from:(trustwallet.com OR noreply@trustwallet.com)
+
+# ── Alerty bezpieczeństwa (bardzo ważne dla przejętego konta) ───────────
+sec_google   | Alerty Google      | from:(no-reply@accounts.google.com OR noreply@google.com)
+sec_logins   | Nowe logowania     | subject:("nowe logowanie" OR "new sign-in" OR "new login" OR "logowanie z nowego" OR "sign-in attempt")
+sec_2fa      | Kody weryfikacyjne | subject:("kod weryfikacyjny" OR "verification code" OR "security code" OR "kod bezpieczeństwa" OR "your code")
+sec_pwreset  | Reset hasła        | subject:("reset hasła" OR "password reset" OR "zresetuj hasło" OR "zmień hasło")
+
+# ── Płatności / banki ────────────────────────────────────────────────────
+paypal     | PayPal     | from:(paypal.com OR service@paypal.com OR noreply@paypal.com)
+revolut    | Revolut    | from:(revolut.com OR noreply@revolut.com)
+stripe     | Stripe     | from:(stripe.com OR noreply@stripe.com)
+
+# ── Zakupy / konta ───────────────────────────────────────────────────────
+allegro    | Allegro    | from:(allegro.pl OR allegromail.pl)
+olx        | OLX        | from:(olx.pl OR noreply@olx.pl)
+amazon     | Amazon     | from:(amazon.com OR amazon.pl OR amazon.de)
+apple      | Apple ID   | from:(apple.com OR noreply@apple.com OR noreply@email.apple.com)
+microsoft  | Microsoft  | from:(microsoft.com OR account-security-noreply@accountprotection.microsoft.com)
+
+# ── Rozrywka / subskrypcje ───────────────────────────────────────────────
+netflix    | Netflix    | from:(netflix.com OR info@mailer.netflix.com)
+spotify    | Spotify    | from:(spotify.com OR no-reply@spotify.com)
+steam      | Steam      | from:(steampowered.com OR noreply@steampowered.com)

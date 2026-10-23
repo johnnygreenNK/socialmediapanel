@@ -1,6 +1,10 @@
 // Gmail stats — tries Gmail REST API (OAuth2) first for accurate counts,
 // falls back to SPA scraping with multiple strategies.
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { config } from './config.js';
 import {
   isConfigured as gmailApiConfigured,
   hasToken,
@@ -12,25 +16,57 @@ import {
 
 var NAV_TIMEOUT = 30000;
 var SEARCH_WAIT = 5000;
+// Cap for binary search — anything above this reports ">MAX_EXACT" instead
+// of a precise number, to keep the whole collection fast (~5-7s per big
+// category instead of ~22s). 5000 = 100 Gmail pages at 50 msgs each.
+var MAX_EXACT = 5000;
 
-var SEARCHES = [
-  { key: 'inbox',       query: 'in:inbox',       label: 'Skrzynka odbiorcza' },
-  { key: 'sent',        query: 'in:sent',         label: 'Wysłane' },
-  { key: 'social',      query: 'category:social',      label: 'Kategoria: Społecznościowe' },
-  { key: 'promotions',  query: 'category:promotions',  label: 'Kategoria: Promocje' },
-  { key: 'updates',     query: 'category:updates',     label: 'Kategoria: Powiadomienia' },
-  { key: 'forums',      query: 'category:forums',      label: 'Kategoria: Fora' },
-  { key: 'facebook',    query: 'from:facebook.com OR from:facebookmail.com', label: 'Od: Facebook' },
-  { key: 'instagram',   query: 'from:instagram.com',   label: 'Od: Instagram' },
-  { key: 'twitter',     query: 'from:twitter.com OR from:x.com', label: 'Od: Twitter/X' },
-  { key: 'linkedin',    query: 'from:linkedin.com',    label: 'Od: LinkedIn' },
-  { key: 'tiktok',      query: 'from:tiktok.com',      label: 'Od: TikTok' },
-  { key: 'youtube',     query: 'from:youtube.com OR from:youtubemail.com', label: 'Od: YouTube' },
-  { key: 'exchanges',   query: 'from:binance.com OR from:coinbase.com OR from:kraken.com OR from:bybit.com OR from:okx.com OR from:kucoin.com OR from:bitget.com OR from:gate.io OR from:bitmex.com', label: 'Od: Giełdy kryptowalut' },
+var DEFAULT_SEARCHES = [
+  { key: 'inbox',       query: 'in:inbox',             label: 'Skrzynka odbiorcza' },
+  { key: 'sent',        query: 'in:sent',              label: 'Wysłane' },
+  { key: 'cat_social',  query: 'category:social',      label: 'Kat. Społecznościowe' },
+  { key: 'cat_promotions', query: 'category:promotions', label: 'Kat. Promocje' },
+  { key: 'facebook',    query: 'from:facebookmail.com', label: 'Facebook' },
+  { key: 'linkedin',    query: 'from:(e.linkedin.com OR linkedin.com)', label: 'LinkedIn' },
 ];
+
+// Load keyword list from keywords.txt — first from DATA_DIR, then repo root.
+// Returns an array of {key, label, query}. Falls back to DEFAULT_SEARCHES.
+function loadSearches() {
+  var __filename = fileURLToPath(import.meta.url);
+  var __dirname = path.dirname(__filename);
+  var candidates = [
+    path.join(config.dataDir, 'keywords.txt'),
+    path.resolve(__dirname, '..', 'keywords.txt'),
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    try {
+      var txt = fs.readFileSync(candidates[i], 'utf8');
+      var list = [];
+      var lines = txt.split('\n');
+      for (var j = 0; j < lines.length; j++) {
+        var ln = lines[j].trim();
+        if (!ln || ln[0] === '#') continue;
+        var parts = ln.split('|').map(function(s) { return s.trim(); });
+        if (parts.length < 3) continue;
+        if (!parts[0] || !parts[1] || !parts[2]) continue;
+        list.push({ key: parts[0], label: parts[1], query: parts[2] });
+      }
+      if (list.length > 0) {
+        console.log('[gmail-stats] loaded ' + list.length + ' searches from ' + candidates[i]);
+        return list;
+      }
+    } catch (e) { /* file not there, try next */ }
+  }
+  console.log('[gmail-stats] no keywords.txt found, using built-in defaults');
+  return DEFAULT_SEARCHES;
+}
+
+var SEARCHES = loadSearches();
 
 function fmtN(n) {
   if (n === null || n === undefined) return '—';
+  if (typeof n === 'string') return n; // ">5000" etc.
   return n.toLocaleString('pl-PL');
 }
 
@@ -40,31 +76,24 @@ export function formatStatsForTelegram(label, s) {
     return '\u{1F4CA} Statystyki maili — ' + label + '\n\n❌ Błąd: ' + reason;
   }
   var source = s._source === 'api' ? ' (Gmail API)' : ' (SPA)';
-  var lines = [
-    '\u{1F4CA} Statystyki maili — ' + label + source,
-    '',
-    '\u{1F4E5} Skrzynka odbiorcza: ' + fmtN(s.inbox),
-    '\u{1F4E4} Wysłane:            ' + fmtN(s.sent),
-    '\u{1F465} Kontakty:           ' + fmtN(s.contacts),
-    '',
-    '\u{1F5C2} Kategorie Gmail:',
-    '  Społecznościowe: ' + fmtN(s.social),
-    '  Promocje:        ' + fmtN(s.promotions),
-    '  Powiadomienia:   ' + fmtN(s.updates),
-    '  Fora:            ' + fmtN(s.forums),
-    '',
-    '\u{1F4F1} Social Media:',
-    '  Facebook:   ' + fmtN(s.facebook),
-    '  Instagram:  ' + fmtN(s.instagram),
-    '  Twitter/X:  ' + fmtN(s.twitter),
-    '  LinkedIn:   ' + fmtN(s.linkedin),
-    '  TikTok:     ' + fmtN(s.tiktok),
-    '  YouTube:    ' + fmtN(s.youtube),
-    '',
-    '₿ Giełdy krypto: ' + fmtN(s.exchanges),
-  ];
+  var lines = ['\u{1F4CA} Statystyki maili — ' + label + source, ''];
+  // Render in SEARCHES order so users control grouping via keywords.txt
+  var searches = s._searches || SEARCHES;
+  var maxLabelLen = 0;
+  for (var i = 0; i < searches.length; i++) {
+    if (searches[i].label.length > maxLabelLen) maxLabelLen = searches[i].label.length;
+  }
+  for (var k = 0; k < searches.length; k++) {
+    var sch = searches[k];
+    var val = s[sch.key];
+    var pad = ' '.repeat(Math.max(0, maxLabelLen - sch.label.length));
+    lines.push('  ' + sch.label + ':' + pad + ' ' + fmtN(val));
+  }
+  if (s.contacts !== undefined) {
+    lines.push('', '\u{1F465} Kontakty: ' + fmtN(s.contacts));
+  }
   if (s.storage) {
-    lines.push('', '\u{1F4BE} Pamięć: ' + s.storage.used + ' z ' + s.storage.total + ' (' + s.storage.percent + '%)');
+    lines.push('\u{1F4BE} Pamięć: ' + s.storage.used + ' z ' + s.storage.total + ' (' + s.storage.percent + '%)');
   }
   return lines.join('\n');
 }
@@ -86,7 +115,7 @@ async function collectViaApi(context, accountId, onProgress) {
     }
   }
 
-  var results = { _source: 'api' };
+  var results = { _source: 'api', _searches: SEARCHES };
 
   for (var i = 0; i < SEARCHES.length; i++) {
     var s = SEARCHES[i];
@@ -237,12 +266,14 @@ async function jumpToLastPageViaUrl(page, query, label) {
     return { parsed: p, rows: rows, n: n };
   }
 
+  // Max page: MAX_EXACT / 50. Above this we report ">MAX_EXACT" to stay fast.
+  var MAX_PAGE = Math.ceil(MAX_EXACT / 50);
   // Binary search: lo always has results, hi doesn't (or unknown)
-  var lo = 1, hi = 500, lastGood = null;
+  var lo = 1, hi = MAX_PAGE, lastGood = null;
   // Fast exponential probe up to find the first empty page
   var probe = 2;
   var firstEmpty = null;
-  while (probe <= 500) {
+  while (probe <= MAX_PAGE) {
     var r = await tryPage(probe);
     if (r.parsed.src === 'pagination') {
       console.log('[gmail-stats] ' + label + ': probe p' + probe + ' → pagination ' + r.parsed.count);
@@ -265,9 +296,9 @@ async function jumpToLastPageViaUrl(page, query, label) {
     probe = probe * 2;
   }
   if (firstEmpty === null) {
-    // Even p=500 had 50 rows and "z wielu" → more than 25000 messages
-    console.log('[gmail-stats] ' + label + ': >25000 (capped)');
-    return 25000;
+    // Even the cap page had 50 rows → more than MAX_EXACT messages
+    console.log('[gmail-stats] ' + label + ': >' + MAX_EXACT + ' (capped)');
+    return '>' + MAX_EXACT;
   }
 
   // Binary search between lo (has 50) and hi (one below first empty)
@@ -441,11 +472,11 @@ async function collectViaSPA(context, onProgress) {
       }
     }
 
-    var results = { _source: 'spa' };
+    var results = { _source: 'spa', _searches: SEARCHES };
 
     for (var i = 0; i < SEARCHES.length; i++) {
       var s = SEARCHES[i];
-      onProgress('Zliczam: ' + s.label + '...');
+      onProgress('[' + (i + 1) + '/' + SEARCHES.length + '] ' + s.label + '...');
       results[s.key] = await searchCount(context, page, ik, at, s.query, s.label, useContextReq);
     }
 
