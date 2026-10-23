@@ -475,7 +475,8 @@ async function launch(accountId, adminIp) {
       }
     }).catch(() => {});
 
-    if (/auth_platform\/afad|two_factor|checkpoint/.test(url)) {
+    if (/auth_platform\/afad|two_factor|checkpoint/.test(url) && !s.afadDumpDone) {
+      s.afadDumpDone = true; // Tylko raz per sesja, żeby nie zapchać CDP i Telegramu
       setTimeout(async () => {
         try {
           // KROK 1: policz co w DOMie w ogóle jest — główny frame i iframe
