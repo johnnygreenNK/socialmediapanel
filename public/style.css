@@ -657,6 +657,91 @@ body.view { overflow: hidden; }
 #screen { display:block; width:100vw; height:100vh; object-fit: contain; background:#000; }
 
 /* ── Animations ──────────────────────────────────────────── */
+/* ── Mail Stats Modal ────────────────────────────────────── */
+.mail-stats-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center;
+  animation: fadeIn .15s var(--ease);
+}
+.mail-stats-modal {
+  width: min(560px, 94vw);
+  max-height: 85vh;
+  background: var(--s1);
+  border: 1px solid var(--border2);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column;
+  animation: popIn .2s var(--ease);
+}
+.mail-stats-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: .95em;
+}
+.mail-stats-close {
+  background: none; border: none; color: var(--muted2);
+  font-size: 1.3em; line-height: 1; padding: 0 4px;
+  cursor: pointer;
+}
+.mail-stats-close:hover { color: var(--text); }
+.mail-stats-body {
+  padding: 24px 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+.mail-stats-progress {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 12px; padding: 24px 0;
+}
+.mail-stats-spinner {
+  width: 36px; height: 36px;
+  border: 3px solid var(--border2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.mail-stats-step {
+  font-size: .88em; color: var(--muted2); text-align: center;
+  max-width: 320px;
+}
+.mail-stats-note {
+  font-size: .8em; color: var(--muted); text-align: center;
+}
+.stats-table {
+  width: 100%; border-collapse: collapse;
+  font-size: .88em;
+}
+.stats-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.stats-table td.stats-num {
+  text-align: right; font-variant-numeric: tabular-nums;
+  font-weight: 600; color: var(--a2); white-space: nowrap;
+}
+.stats-section-row td {
+  padding: 14px 8px 4px;
+  font-size: .78em; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted2); border-bottom: none;
+}
+.stats-error {
+  color: var(--red); font-size: .9em; padding: 8px 0;
+}
+.stats-storage {
+  margin-top: 16px; font-size: .83em; color: var(--muted2); text-align: center;
+}
+.btn-mail-stats {
+  font-size: .82em; padding: 7px 14px; background: var(--s2);
+  color: var(--text); border: 1px solid var(--border); border-radius: var(--r-sm);
+  margin-top: 4px;
+}
+.btn-mail-stats:hover { border-color: var(--border2); background: var(--s3); }
+
 @keyframes fadeUp {
   from { opacity:0; transform:translateY(14px); }
   to   { opacity:1; transform:none; }

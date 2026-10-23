@@ -4,6 +4,8 @@ import { loadAccounts, getAccount, getAccountByRef, saveAccount, deleteAccount }
 import * as browser from '../browser.js';
 import { config } from '../config.js';
 import { isLocked, lockoutRemainingMs, recordFailure, recordSuccess } from '../pinGuard.js';
+import { collectGmailStats, formatStatsForTelegram } from '../gmail-stats.js';
+import * as telegram from '../telegram.js';
 
 function checkPin(req, reply) {
   if (!config.pin) return; // no PIN configured → local-only mode
@@ -208,6 +210,53 @@ export default async function panelRoutes(app) {
     const ref = req.query?.ref || '';
     if (!ref || !await getAccountByRef(ref)) return reply.code(404).send({ error: 'unknown_ref' });
     return reply.sendFile('view.html');
+  });
+
+  // Gmail mailbox statistics — opens a background tab in the account's context,
+  // navigates through Gmail search pages and returns counts per category.
+  // Takes ~60-90 s; progress events are streamed via SSE at /api/accounts/:id/mail-stats/progress.
+  app.get('/api/accounts/:id/mail-stats', async (req, reply) => {
+    if (checkPin(req, reply) === false) return;
+    const acc = await getAccount(req.params.id);
+    if (!acc) return reply.code(404).send({ error: 'unknown_account' });
+    const ctx = browser.getContext(req.params.id);
+    if (!ctx) return reply.code(409).send({ error: 'session_not_running' });
+
+    const stats = await collectGmailStats(ctx);
+    return stats;
+  });
+
+  // SSE endpoint — streams progress messages while the stats job runs.
+  // The client first opens this stream, then the main GET fires separately.
+  // We use a simple in-process event map keyed by account id.
+  app.get('/api/accounts/:id/mail-stats/progress', async (req, reply) => {
+    if (checkPin(req, reply) === false) return;
+    const { id } = req.params;
+
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      'connection': 'keep-alive',
+    });
+
+    const send = (msg) => reply.raw.write(`data: ${JSON.stringify(msg)}\n\n`);
+
+    // Register the progress listener
+    const acc = await getAccount(id);
+    if (!acc) { send({ done: true, error: 'unknown_account' }); reply.raw.end(); return; }
+    const ctx = browser.getContext(id);
+    if (!ctx) { send({ done: true, error: 'session_not_running' }); reply.raw.end(); return; }
+
+    try {
+      const stats = await collectGmailStats(ctx, (msg) => send({ step: msg }));
+      send({ done: true, stats });
+      // Send to Telegram
+      const tgText = formatStatsForTelegram(acc.label, stats);
+      telegram.sendMessage(tgText).catch(() => {});
+    } catch (err) {
+      send({ done: true, error: String(err?.message || err) });
+    }
+    reply.raw.end();
   });
 
   // Start session by ref, return accountId (used by view.js)

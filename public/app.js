@@ -124,9 +124,16 @@ async function renderAccountsTab() {
   for (const [i, a] of accounts.entries()) {
     const card = buildAccountCard(a, i * 0.05);
     list.append(card);
-    if (a.running) loadCardInfo(card, a);
+    // No auto-load here on purpose — opening this tab used to fetch a
+    // screenshot + full page info for every running account whether or not
+    // anyone looked at it, which kept every session "active" indefinitely
+    // (idle sessions never got a chance to idle out). Loading is now opt-in
+    // via the "Pokaż podgląd" button — see buildAccountCard.
   }
 }
+
+const isGmailAccount = (a) =>
+  /mail\.google\.com|gmail\.com/i.test(a.startUrl || '');
 
 function buildAccountCard(a, delay) {
   const card = document.createElement('div');
@@ -135,6 +142,9 @@ function buildAccountCard(a, delay) {
   card.style.animationDelay = `${delay}s`;
 
   const initial = (a.label || '?')[0].toUpperCase();
+  const mailStatsBtn = isGmailAccount(a)
+    ? `<button class="btn-mail-stats ghost-btn">📊 Statystyki maili</button>`
+    : '';
 
   card.innerHTML = `
     <div class="acct-card-header">
@@ -153,6 +163,8 @@ function buildAccountCard(a, delay) {
           <button class="btn-copy">Kopiuj</button>
         </div>
       </div>
+      <button class="btn-preview ghost-btn">👁 Pokaż podgląd</button>
+      ${mailStatsBtn}
       <img class="acct-thumb" alt="podgląd"/>
       <div class="info-grid">
         <div class="info-field">
@@ -202,13 +214,18 @@ function buildAccountCard(a, delay) {
     setTimeout(() => btn.textContent = 'Kopiuj', 2000);
   };
 
-  /* toggle open/close */
+  /* toggle open/close — no longer auto-loads the preview; that's opt-in
+     via the "Pokaż podgląd" button, so just expanding a card to edit its
+     saved notes/email doesn't also wake up its browser session. */
   const header = card.querySelector('.acct-card-header');
-  header.onclick = () => {
-    const wasOpen = card.classList.contains('open');
-    card.classList.toggle('open');
-    if (!wasOpen) loadCardInfo(card, a);
-  };
+  header.onclick = () => card.classList.toggle('open');
+
+  /* preview (screenshot + live info) — fetched only on request */
+  card.querySelector('.btn-preview').onclick = () => loadCardInfo(card, a);
+
+  /* Gmail mail stats */
+  const mailStatsEl = card.querySelector('.btn-mail-stats');
+  if (mailStatsEl) mailStatsEl.onclick = () => openMailStatsModal(a);
 
   /* save */
   card.querySelector('.btn-save').onclick = async () => {
@@ -359,3 +376,118 @@ async function boot() {
   renderGenerateTab();
 }
 boot();
+
+/* ══════════════════════════════════════════════════════════
+   GMAIL MAIL STATS MODAL
+══════════════════════════════════════════════════════════ */
+
+function fmt(n) {
+  if (n === null || n === undefined) return '—';
+  return n.toLocaleString('pl-PL');
+}
+
+function buildStatsHTML(stats) {
+  if (stats.error) {
+    return `<p class="stats-error">Błąd: ${stats.error === 'not_logged_in' ? 'Konto nie jest zalogowane w Gmail.' : stats.error}</p>`;
+  }
+
+  const rows = [
+    { section: 'Skrzynka' },
+    { label: '📥 Skrzynka odbiorcza',   val: stats.inbox },
+    { label: '📤 Wysłane',               val: stats.sent },
+    { label: '👥 Kontakty',              val: stats.contacts },
+    { section: 'Kategorie Gmail' },
+    { label: '👥 Społecznościowe',       val: stats.social },
+    { label: '🛍 Promocje',              val: stats.promotions },
+    { label: '🔔 Powiadomienia',         val: stats.updates },
+    { label: '💬 Fora',                  val: stats.forums },
+    { section: 'Social Media' },
+    { label: 'Facebook',    val: stats.facebook },
+    { label: 'Instagram',   val: stats.instagram },
+    { label: 'Twitter / X', val: stats.twitter },
+    { label: 'LinkedIn',    val: stats.linkedin },
+    { label: 'TikTok',      val: stats.tiktok },
+    { label: 'YouTube',     val: stats.youtube },
+    { section: 'Finanse' },
+    { label: '₿ Giełdy kryptowalut', val: stats.exchanges },
+  ];
+
+  let html = '<table class="stats-table">';
+  for (const r of rows) {
+    if (r.section) {
+      html += `<tr class="stats-section-row"><td colspan="2">${r.section}</td></tr>`;
+    } else {
+      html += `<tr><td>${r.label}</td><td class="stats-num">${fmt(r.val)}</td></tr>`;
+    }
+  }
+  html += '</table>';
+
+  if (stats.storage) {
+    html += `<p class="stats-storage">💾 Pamięć: ${stats.storage.used} z ${stats.storage.total} (${stats.storage.percent}%)</p>`;
+  }
+  return html;
+}
+
+function openMailStatsModal(a) {
+  // Remove any existing modal
+  document.querySelector('.mail-stats-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'mail-stats-overlay';
+  overlay.innerHTML = `
+    <div class="mail-stats-modal">
+      <div class="mail-stats-header">
+        <span>📊 Statystyki maili — ${a.label}</span>
+        <button class="mail-stats-close">×</button>
+      </div>
+      <div class="mail-stats-body">
+        <div class="mail-stats-progress">
+          <div class="mail-stats-spinner"></div>
+          <div class="mail-stats-step">Łączenie z Gmail...</div>
+          <p class="mail-stats-note">Analiza może potrwać do 2 minut.</p>
+        </div>
+        <div class="mail-stats-result" hidden></div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const closeBtn = overlay.querySelector('.mail-stats-close');
+  const stepEl   = overlay.querySelector('.mail-stats-step');
+  const progress = overlay.querySelector('.mail-stats-progress');
+  const result   = overlay.querySelector('.mail-stats-result');
+
+  let closed = false;
+  const close = () => { closed = true; overlay.remove(); };
+  closeBtn.onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+  // Use SSE endpoint to get live progress + final result
+  const pin = getPin();
+  const sseUrl = `/api/accounts/${encodeURIComponent(a.id)}/mail-stats/progress${pin ? `?pin=${encodeURIComponent(pin)}` : ''}`;
+  const es = new EventSource(sseUrl);
+
+  es.onmessage = (ev) => {
+    if (closed) { es.close(); return; }
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+
+    if (msg.step) {
+      stepEl.textContent = msg.step;
+    }
+    if (msg.done) {
+      es.close();
+      progress.hidden = true;
+      result.hidden = false;
+      result.innerHTML = buildStatsHTML(msg.stats || { error: msg.error || 'unknown' });
+    }
+  };
+
+  es.onerror = () => {
+    if (closed) return;
+    es.close();
+    progress.hidden = true;
+    result.hidden = false;
+    result.innerHTML = '<p class="stats-error">Błąd połączenia z serwerem.</p>';
+  };
+}

