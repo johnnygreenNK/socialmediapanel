@@ -10,6 +10,7 @@ services:
     volumes:
       - profiles:/data
     restart: unless-stopped
+    user: root
     # Not published directly in the HTTPS setup; Caddy proxies to it.
     expose:
       - "8080"
