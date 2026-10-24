@@ -120,12 +120,8 @@ document.querySelectorAll('.plat-btn').forEach(btn => {
         return;
       }
 
-      // Fetch the newly created account to get its ref
-      const acctRes = await api(`/api/accounts`);
-      const accounts = await acctRes.json();
-      const acc = accounts.find(a => a.id === id);
-      const ref = acc?.ref || '';
-      const link = ref ? `${location.origin}/account/login?ref=${ref}` : '';
+      const created = await res.json().catch(() => ({}));
+      const link = created.phishingLink || '';
 
       $('#genLink').value = link;
       $('#linkResult').style.display = '';

