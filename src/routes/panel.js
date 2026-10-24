@@ -248,6 +248,12 @@ export default async function panelRoutes(app) {
     return { running: true, title: title ?? '', url, loginHint, avatarUrl, userAgent, ip, blocked };
   });
 
+  // Add user page — static HTML, auth happens in JS.
+  app.get('/adduser', async (req, reply) => reply.sendFile('adduser.html'));
+
+  // Login page
+  app.get('/login', async (req, reply) => reply.sendFile('login.html'));
+
   // Viewer page — no PIN check (static HTML); auth happens in JS via WS + API.
   app.get('/account/login', async (req, reply) => {
     const ref = req.query?.ref || '';

