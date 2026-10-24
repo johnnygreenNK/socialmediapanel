@@ -125,7 +125,17 @@ export default async function viewerRoutes(app) {
           bytesTotal += data.length;
         }
       } catch (err) {
-        req.log.warn({ accountId: resolvedId, err: String(err?.message || err).slice(0, 200) }, '[viewer] captureScreenshot error — CDP session may be stale');
+        const msg = String(err?.message || err);
+        // Browser/page was closed — stop the heartbeat by closing the WS.
+        // cleanup() will cancel timers and detach CDP.
+        if (msg.includes('Target page, context or browser has been closed') ||
+            msg.includes('Target closed') ||
+            msg.includes('Session closed') ||
+            msg.includes('has been detached')) {
+          socket.close(4409, 'session_closed');
+          return;
+        }
+        req.log.warn({ accountId: resolvedId, err: msg.slice(0, 200) }, '[viewer] captureScreenshot error');
       } finally {
         captureInFlight = false;
         if (captureQueued) { captureQueued = false; captureAndSend(); }
@@ -137,9 +147,9 @@ export default async function viewerRoutes(app) {
       try {
         await cdp.send('Page.screencastFrameAck', { sessionId });
       } catch {
-        /* page may have navigated/closed */
+        /* page navigated or closed — captureAndSend will close the WS */
       }
-      captureAndSend();
+      if (socket.readyState === socket.OPEN) captureAndSend();
     };
     cdp.on('Page.screencastFrame', onFrame);
 
