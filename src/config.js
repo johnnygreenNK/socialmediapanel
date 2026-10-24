@@ -13,7 +13,6 @@ export const config = {
   dataDir: process.env.DATA_DIR || '/data',
   // PIN required when the server is exposed beyond localhost.
   // Set PIN= in .env; leave empty to skip (safe only on 127.0.0.1).
-  pin: process.env.PIN || '',
   // 'chrome' uses the system-installed Google Chrome (better for Google/Gmail).
   // Leave empty to use Playwright's bundled Chromium.
   browserChannel: process.env.BROWSER_CHANNEL || '',

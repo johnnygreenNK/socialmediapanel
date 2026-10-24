@@ -10,6 +10,7 @@ import panelRoutes from './routes/panel.js';
 import viewerRoutes from './viewer.js';
 import * as browser from './browser.js';
 import * as telegram from './telegram.js';
+import { userCount } from './userdb.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +56,12 @@ try {
 } catch (err) {
   app.log.error(err);
   process.exit(1);
+}
+
+// Warn if no panel users exist yet — admin should create one via Telegram /adduser
+const count = await userCount().catch(() => 0);
+if (count === 0) {
+  app.log.warn('No panel users found. Create one via Telegram: /adduser <login> <password>');
 }
 
 // Accounts launch lazily on first access (see /start routes) and idle ones
