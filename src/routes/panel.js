@@ -26,10 +26,7 @@ function checkAuth(req, reply) {
     return false;
   }
   const token = sessionToken(req);
-  if (token && validateSession(token)) {
-    recordSuccess(req.ip);
-    return true;
-  }
+  if (token && validateSession(token)) return true;
   recordFailure(req.ip);
   reply.code(401).send({ error: 'unauthorized' });
   return false;
@@ -75,22 +72,23 @@ export default async function panelRoutes(app) {
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   app.post('/api/auth', async (req, reply) => {
-    if (isLocked(req.ip)) {
-      return reply.code(429).send({ error: 'too_many_attempts', retryAfterMs: lockoutRemainingMs(req.ip) });
-    }
     const body = req.body || {};
     if (typeof body.username !== 'string' || typeof body.password !== 'string') {
       return reply.code(400).send({ error: 'username_and_password_required' });
     }
+    const username = body.username.trim().toLowerCase();
+    if (isLocked(req.ip, username)) {
+      return reply.code(429).send({ error: 'too_many_attempts', retryAfterMs: lockoutRemainingMs(req.ip, username) });
+    }
     // verifyUser runs constant-time comparison; always returns null on failure
-    const user = await verifyUser(body.username, body.password).catch(() => null);
+    const user = await verifyUser(username, body.password).catch(() => null);
     if (!user) {
-      recordFailure(req.ip);
-      const ms = lockoutRemainingMs(req.ip);
+      recordFailure(req.ip, username);
+      const ms = lockoutRemainingMs(req.ip, username);
       // Generic error — no username enumeration
       return reply.code(401).send({ error: 'invalid_credentials', ...(ms ? { retryAfterMs: ms } : {}) });
     }
-    recordSuccess(req.ip);
+    recordSuccess(req.ip, username);
     const token = createSession(user.username);
     return reply.header('Set-Cookie', cookieSet(token)).send({ ok: true });
   });
@@ -281,15 +279,26 @@ export default async function panelRoutes(app) {
     return { running: true, title: title ?? '', url, loginHint, avatarUrl, userAgent, ip, blocked };
   });
 
+  // No-store so browsers never cache protected panel HTML
+  const noStore = (reply) => reply.header('Cache-Control', 'no-store');
+
   // Guard root — redirect to /login before the browser sees panel HTML
   app.get('/', async (req, reply) => {
     const token = sessionToken(req);
-    if (token && validateSession(token)) return reply.sendFile('index.html');
+    if (token && validateSession(token)) { noStore(reply); return reply.sendFile('index.html'); }
     return reply.redirect(302, '/login');
   });
 
-  app.get('/adduser', async (req, reply) => reply.sendFile('adduser.html'));
-  app.get('/login', async (req, reply) => reply.sendFile('login.html'));
+  app.get('/adduser', async (req, reply) => {
+    const token = sessionToken(req);
+    if (token && validateSession(token)) { noStore(reply); return reply.sendFile('adduser.html'); }
+    return reply.redirect(302, '/login');
+  });
+
+  app.get('/login', async (req, reply) => {
+    noStore(reply);
+    return reply.sendFile('login.html');
+  });
 
   app.get('/account/login', async (req, reply) => {
     const ref = req.query?.ref || '';

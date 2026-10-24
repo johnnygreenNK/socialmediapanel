@@ -28,6 +28,7 @@ await app.register(viewerRoutes);
 await app.register(fstatic, {
   root: path.join(__dirname, '..', 'public'),
   prefix: '/',
+  index: false,  // disable automatic index.html — our route guard handles /
 });
 
 app.get('/healthz', async () => ({ ok: true }));

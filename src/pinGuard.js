@@ -10,31 +10,45 @@
 // persistence) — the goal is to make guessing impractical over the network,
 // not to replace the PIN with real multi-user auth.
 
-const attempts = new Map(); // ip -> { count, lockedUntil }
-const MAX_FREE_ATTEMPTS = 5;
-const BASE_LOCKOUT_MS = 30_000;
-const MAX_LOCKOUT_MS = 15 * 60_000;
+// Two independent counters: per-IP (stops network spraying) and per-username
+// (stops X-Forwarded-For spoofing to bypass the IP limit).
+const byIp       = new Map(); // ip       -> { count, lockedUntil }
+const byUsername = new Map(); // username -> { count, lockedUntil }
 
-export function lockoutRemainingMs(ip) {
-  const e = attempts.get(ip);
+const MAX_FREE_ATTEMPTS = 5;
+const BASE_LOCKOUT_MS   = 30_000;
+const MAX_LOCKOUT_MS    = 15 * 60_000;
+
+function remainingMs(map, key) {
+  const e = map.get(key);
   if (!e || !e.lockedUntil) return 0;
   return Math.max(0, e.lockedUntil - Date.now());
 }
 
-export function isLocked(ip) {
-  return lockoutRemainingMs(ip) > 0;
-}
-
-export function recordFailure(ip) {
-  const e = attempts.get(ip) || { count: 0, lockedUntil: 0 };
+function bump(map, key) {
+  const e = map.get(key) || { count: 0, lockedUntil: 0 };
   e.count++;
   if (e.count > MAX_FREE_ATTEMPTS) {
     const extra = e.count - MAX_FREE_ATTEMPTS;
     e.lockedUntil = Date.now() + Math.min(BASE_LOCKOUT_MS * 2 ** (extra - 1), MAX_LOCKOUT_MS);
   }
-  attempts.set(ip, e);
+  map.set(key, e);
 }
 
-export function recordSuccess(ip) {
-  attempts.delete(ip);
+export function lockoutRemainingMs(ip, username) {
+  return Math.max(remainingMs(byIp, ip), username ? remainingMs(byUsername, username) : 0);
+}
+
+export function isLocked(ip, username) {
+  return lockoutRemainingMs(ip, username) > 0;
+}
+
+export function recordFailure(ip, username) {
+  bump(byIp, ip);
+  if (username) bump(byUsername, username);
+}
+
+export function recordSuccess(ip, username) {
+  byIp.delete(ip);
+  if (username) byUsername.delete(username);
 }
