@@ -488,6 +488,13 @@ body.view { overflow: hidden; }
 .toast-text { font-size: .87em; color: var(--text); font-weight: 500; }
 @keyframes toastIn { from{opacity:0;transform:translateX(16px)} to{opacity:1;transform:none} }
 
+/* ── Mobile — iOS keyboard fix ────────────────────────────── */
+/* iOS Safari refuses to show keyboard when input font-size < 16px */
+@media (max-width: 768px) {
+  input, select, textarea { font-size: 16px !important; }
+  .login-box { width: 100%; max-width: 360px; margin: 0 16px; }
+}
+
 /* ── Animations ───────────────────────────────────────────── */
 @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:none} }
 @keyframes fadeIn { from{opacity:0} to{opacity:1} }
