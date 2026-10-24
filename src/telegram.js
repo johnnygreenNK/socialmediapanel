@@ -67,16 +67,29 @@ export async function discoverChatId() {
 
 const PLATFORM_URLS = {
   facebook: 'https://www.facebook.com/',
+  fb: 'https://www.facebook.com/',
   gmail: 'https://mail.google.com/mail/u/0/',
+  gm: 'https://mail.google.com/mail/u/0/',
+  google: 'https://mail.google.com/mail/u/0/',
   instagram: 'https://www.instagram.com/',
+  ig: 'https://www.instagram.com/',
   twitter: 'https://x.com/',
+  tw: 'https://x.com/',
+  x: 'https://x.com/',
 };
 
 const PLATFORM_LABELS = {
-  facebook: 'Facebook',
-  gmail: 'Gmail',
-  instagram: 'Instagram',
-  twitter: 'Twitter / X',
+  facebook: 'Facebook', fb: 'Facebook',
+  gmail: 'Gmail', gm: 'Gmail', google: 'Gmail',
+  instagram: 'Instagram', ig: 'Instagram',
+  twitter: 'Twitter / X', tw: 'Twitter / X', x: 'Twitter / X',
+};
+
+const PLATFORM_CANONICAL = {
+  facebook: 'facebook', fb: 'facebook',
+  gmail: 'gmail', gm: 'gmail', google: 'gmail',
+  instagram: 'instagram', ig: 'instagram',
+  twitter: 'twitter', tw: 'twitter', x: 'twitter',
 };
 
 async function replyTo(chatId, text) {
@@ -92,19 +105,20 @@ async function replyTo(chatId, text) {
 async function handleAdduser(chatId, args, publicHost) {
   // args: ['<name>', '<platform>']
   if (args.length < 2) {
-    await replyTo(chatId, '❌ Użycie: /adduser <imię> <platforma>\nPlatformy: facebook, gmail, instagram, twitter');
+    await replyTo(chatId, '❌ Użycie: /adduser <imię> <platforma>\n\nPrzykłady:\n/adduser Jan facebook\n/adduser Anna ig\n/adduser Piotr gmail\n\nPlatformy: facebook (fb), gmail (gm), instagram (ig), twitter (tw)');
     return;
   }
   const name = args[0];
   const platform = args[1].toLowerCase();
   const startUrl = PLATFORM_URLS[platform];
   if (!startUrl) {
-    await replyTo(chatId, `❌ Nieznana platforma: ${platform}\nDostępne: facebook, gmail, instagram, twitter`);
+    await replyTo(chatId, `❌ Nieznana platforma: "${platform}"\n\nPrzykłady:\n/adduser Jan facebook\n/adduser Anna ig\n/adduser Piotr gmail\n\nDostępne: facebook (fb), gmail (gm), instagram (ig), twitter (tw)`);
     return;
   }
+  const canonical = PLATFORM_CANONICAL[platform];
   const platLabel = PLATFORM_LABELS[platform];
   const label = `${name} – ${platLabel}`;
-  const id = `${name}-${platform}`.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
+  const id = `${name}-${canonical}`.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
   if (!id) {
     await replyTo(chatId, '❌ Nazwa zawiera niedozwolone znaki.');
     return;
