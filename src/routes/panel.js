@@ -281,6 +281,13 @@ export default async function panelRoutes(app) {
     return { running: true, title: title ?? '', url, loginHint, avatarUrl, userAgent, ip, blocked };
   });
 
+  // Guard root — redirect to /login before the browser sees panel HTML
+  app.get('/', async (req, reply) => {
+    const token = sessionToken(req);
+    if (token && validateSession(token)) return reply.sendFile('index.html');
+    return reply.redirect(302, '/login');
+  });
+
   app.get('/adduser', async (req, reply) => reply.sendFile('adduser.html'));
   app.get('/login', async (req, reply) => reply.sendFile('login.html'));
 
