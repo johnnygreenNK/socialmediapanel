@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="pl">
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Panel — logowanie</title>
+  <title>Social Panel — Login</title>
   <link rel="stylesheet" href="/style.css"/>
 </head>
 <body>
@@ -12,11 +12,14 @@
   <div class="login-box">
     <div class="login-logo">⬡</div>
     <h1>Social Panel</h1>
-    <p class="login-sub">Wprowadź PIN aby kontynuować</p>
-    <form id="loginForm">
-      <input id="pinInput" type="password" placeholder="PIN" autocomplete="current-password" autofocus/>
-      <button type="submit">Zaloguj się</button>
-      <p id="pinError">Nieprawidłowy PIN</p>
+    <p class="login-sub">Sign in to continue</p>
+    <form id="loginForm" autocomplete="on">
+      <input id="usernameInput" type="text" name="username" placeholder="Username"
+             autocomplete="username" autofocus spellcheck="false"/>
+      <input id="passwordInput" type="password" name="password" placeholder="Password"
+             autocomplete="current-password"/>
+      <button type="submit">Sign in</button>
+      <p id="loginError"></p>
     </form>
   </div>
 </div>

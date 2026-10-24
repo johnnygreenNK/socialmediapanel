@@ -9,6 +9,7 @@ import { config } from './config.js';
 import panelRoutes from './routes/panel.js';
 import viewerRoutes from './viewer.js';
 import * as browser from './browser.js';
+import * as telegram from './telegram.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,12 +18,22 @@ const app = Fastify({
   trustProxy: true, // behind Caddy / tunnel
 });
 
+// ── Security headers ──────────────────────────────────────────────────────────
+app.addHook('onSend', async (req, reply) => {
+  reply.header('x-content-type-options', 'nosniff');
+  reply.header('x-frame-options', 'DENY');
+  reply.header('referrer-policy', 'no-referrer');
+  reply.header(
+    'content-security-policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: blob: https:; connect-src 'self' wss: ws:; frame-src 'self'; object-src 'none'",
+  );
+});
+
 await app.register(websocket);
 await app.register(panelRoutes);
 await app.register(viewerRoutes);
 
-// Serve the bundled reference client (public/). Your own HTML/CSS front end can
-// replace this, or embed public/viewer.js directly.
 await app.register(fstatic, {
   root: path.join(__dirname, '..', 'public'),
   prefix: '/',
@@ -30,9 +41,6 @@ await app.register(fstatic, {
 
 app.get('/healthz', async () => ({ ok: true }));
 
-// A single uncaught rejection anywhere (e.g. a Playwright call racing a
-// browser crash) used to take the entire panel down with it, killing every
-// account's session at once. Log it and keep running instead.
 process.on('unhandledRejection', (err) => {
   app.log.error({ err }, 'unhandled rejection (ignored, server stays up)');
 });
@@ -42,6 +50,7 @@ process.on('uncaughtException', (err) => {
 
 async function shutdown(signal) {
   app.log.info({ signal }, 'shutting down, persisting profiles');
+  telegram.stopPolling();
   await browser.shutdownAll();
   await app.close();
   process.exit(0);
@@ -56,7 +65,5 @@ try {
   process.exit(1);
 }
 
-// Accounts launch lazily on first access (see /start routes) and idle ones
-// are stopped automatically — see browser.js's reaper. Running every account
-// 24/7 overloads small VPS boxes once more than a couple of accounts exist.
 browser.startIdleReaper(app.log);
+telegram.startPolling();

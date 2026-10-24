@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pl">
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -33,7 +33,14 @@
       </button>
     </nav>
     <div class="sidebar-footer">
-      <button id="logoutBtn" class="logout-btn-full" title="Wyloguj">⏻ Wyloguj</button>
+      <div class="sidebar-user">
+        <div class="user-avatar">N</div>
+        <div class="user-info">
+          <div class="user-name">Admin</div>
+          <div class="user-status"><span class="dot-green"></span>Online</div>
+        </div>
+      </div>
+      <button id="logoutBtn" class="logout-btn" title="Sign out">⏻</button>
     </div>
   </aside>
 
@@ -42,6 +49,10 @@
       <div class="breadcrumb">
         MY WORKSPACE / <span id="crumb-label">Generate LINK</span>
       </div>
+      <div class="topbar-right">
+        <span id="topbar-clock"></span>
+        <span class="badge-online">● ONLINE</span>
+      </div>
     </div>
 
     <!-- ── TAB: Generate LINK ── -->
@@ -49,26 +60,25 @@
       <div class="page-header">
         <div>
           <h1>Generate LINK</h1>
-          <p class="page-sub">Dodaj nowe konto. Linki do istniejących znajdziesz w zakładce Accounts.</p>
+          <p class="page-sub">Add a new account. Links to existing accounts are in the Accounts tab.</p>
         </div>
+        <button id="addBtn" class="btn-primary">+ Add account</button>
       </div>
 
-      <div class="add-box">
+      <div id="genAccounts" class="account-grid"></div>
+
+      <div id="addBox" class="add-box" hidden>
         <div class="add-box-header">
-          <span class="add-step-label">Nowe konto</span>
+          <span class="add-step-label">New account</span>
+          <button id="addCancel" class="btn-ghost-sm">✕ Cancel</button>
         </div>
         <div class="add-fields">
           <div class="field-group">
-            <label class="field-label">Imię / nazwa</label>
-            <input id="addName" class="field-input" placeholder="np. Jan Kowalski"/>
+            <label class="field-label">Name</label>
+            <input id="addName" class="field-input" placeholder="e.g. John Smith"/>
           </div>
           <div class="field-group">
-            <label class="field-label">Proxy <span class="field-opt">(opcjonalnie)</span></label>
-            <input id="addProxy" class="field-input" placeholder="np. socks5://user:pass@host:1080 lub http://host:8080"/>
-            <p class="field-hint">Zostaw puste, aby użyć domyślnego proxy serwera (lub bezpośrednio dla Gmaila).</p>
-          </div>
-          <div class="field-group">
-            <label class="field-label">Platforma</label>
+            <label class="field-label">Platform</label>
             <div class="plat-grid">
               <button class="plat-btn" data-platform="facebook" data-url="https://www.facebook.com/">
                 <span class="plat-icon plat-fb">f</span>
@@ -90,11 +100,6 @@
           </div>
         </div>
       </div>
-
-      <div class="created-accounts">
-        <div class="created-accounts-head">Accounts created</div>
-        <div id="genAccounts" class="minimal-acct-list"></div>
-      </div>
     </div>
 
     <!-- ── TAB: Accounts ── -->
@@ -102,7 +107,7 @@
       <div class="page-header">
         <div>
           <h1>Accounts</h1>
-          <p class="page-sub">Szczegóły kont i zarządzanie sesjami.</p>
+          <p class="page-sub">Account details and session management.</p>
         </div>
       </div>
       <div id="acctList" class="acct-list"></div>
@@ -113,17 +118,17 @@
       <div class="page-header">
         <div>
           <h1>LIVE TIME LOGS</h1>
-          <p class="page-sub">Aktywność na kontach w czasie rzeczywistym.</p>
+          <p class="page-sub">Real-time activity on your accounts.</p>
         </div>
         <div style="display:flex;gap:8px;">
           <button id="dumpCookiesBtn" class="btn-ghost-sm">🍪 Cookies</button>
-          <button class="btn-ghost-sm" onclick="clearLogs()">Wyczyść</button>
+          <button class="btn-ghost-sm" onclick="clearLogs()">Clear</button>
         </div>
       </div>
       <div id="logsList" class="logs-list">
         <div class="log-entry log-info">
           <span class="log-time" id="log-start-time"></span>
-          <span class="log-msg">Panel uruchomiony</span>
+          <span class="log-msg">Panel started</span>
         </div>
       </div>
     </div>
@@ -133,29 +138,29 @@
       <div class="page-header">
         <div>
           <h1>Statistics</h1>
-          <p class="page-sub">Przegląd kont i aktywności.</p>
+          <p class="page-sub">Account and activity overview.</p>
         </div>
       </div>
       <div class="stats-grid">
         <div class="stat-tile">
           <div class="stat-icon">👤</div>
           <div class="stat-val" id="stat-total">—</div>
-          <div class="stat-lbl">Wszystkich kont</div>
+          <div class="stat-lbl">Total accounts</div>
         </div>
         <div class="stat-tile">
           <div class="stat-icon">🔗</div>
           <div class="stat-val" id="stat-links">—</div>
-          <div class="stat-lbl">Wygenerowanych linków</div>
+          <div class="stat-lbl">Links generated</div>
         </div>
         <div class="stat-tile">
           <div class="stat-icon">⏱</div>
           <div class="stat-val" id="stat-uptime">—</div>
-          <div class="stat-lbl">Uptime sesji</div>
+          <div class="stat-lbl">Session uptime</div>
         </div>
         <div class="stat-tile">
           <div class="stat-icon">✅</div>
           <div class="stat-val" id="stat-active">—</div>
-          <div class="stat-lbl">Aktywnych kont</div>
+          <div class="stat-lbl">Active accounts</div>
         </div>
       </div>
     </div>
@@ -164,7 +169,15 @@
 
 <script src="/app.js"></script>
 <script>
-  document.getElementById('log-start-time').textContent = new Date().toLocaleTimeString('pl-PL');
+  /* ── Clock ── */
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('topbar-clock').textContent =
+      now.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+  document.getElementById('log-start-time').textContent = new Date().toLocaleTimeString('en-GB');
 
   /* ── Session uptime ── */
   const sessionStart = Date.now();
@@ -187,7 +200,7 @@
     entry.className = `log-entry log-${type}`;
     const time = document.createElement('span');
     time.className = 'log-time';
-    time.textContent = new Date().toLocaleTimeString('pl-PL');
+    time.textContent = new Date().toLocaleTimeString('en-GB');
     const text = document.createElement('span');
     text.className = 'log-msg';
     text.textContent = msg;
@@ -208,7 +221,6 @@
     logs: 'LIVE TIME LOGS',
     stats: 'Statistics'
   };
-  const origSwitch = window.switchTab;
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.nav-item').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -222,7 +234,7 @@
   /* ── Stats ── */
   async function loadStats() {
     try {
-      const res = await fetch('/api/accounts', { credentials: 'same-origin', headers: { 'x-pin': localStorage.getItem('pin')||'' } });
+      const res = await fetch('/api/accounts', { credentials: 'same-origin' });
       if (!res.ok) return;
       const accounts = await res.json();
       document.getElementById('stat-total').textContent = accounts.length;
@@ -233,7 +245,7 @@
 
   /* ── Intercept copy to count links ── */
   document.addEventListener('click', e => {
-    if (e.target.id === 'genCopy') { linkCount++; addLog('Link skopiowany', 'success'); }
+    if (e.target.id === 'genCopy') { linkCount++; addLog('Link copied', 'success'); }
   });
 </script>
 </body>
