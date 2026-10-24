@@ -4,9 +4,24 @@ import { loadAccounts, getAccount, getAccountByRef, saveAccount, deleteAccount }
 import * as browser from '../browser.js';
 import { config } from '../config.js';
 import { isLocked, lockoutRemainingMs, recordFailure, recordSuccess } from '../pinGuard.js';
+import { createSession, validateSession, deleteSession } from '../session.js';
 import { collectGmailStats, formatStatsForTelegram } from '../gmail-stats.js';
 import { isConfigured as gmailApiConfigured, hasToken as hasGmailToken, revokeToken as revokeGmailToken } from '../gmail-api.js';
 import * as telegram from '../telegram.js';
+
+// Parse the __sp_s session token from the Cookie header.
+function sessionToken(req) {
+  const m = (req.headers.cookie || '').match(/(?:^|;\s*)__sp_s=([0-9a-f]{64})/);
+  return m ? m[1] : null;
+}
+
+// Build a Set-Cookie header value for the session token.
+// Secure flag is omitted — Caddy handles TLS termination, so the cookie is
+// always delivered over HTTPS in production.  Omitting it means the cookie
+// also works on localhost dev setups without fighting self-signed certs.
+function cookieSet(token, maxAge = 86400) {
+  return `__sp_s=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
+}
 
 function checkPin(req, reply) {
   if (!config.pin) return; // no PIN configured → local-only mode
@@ -14,29 +29,88 @@ function checkPin(req, reply) {
     reply.code(429).send({ error: 'too_many_attempts', retryAfterMs: lockoutRemainingMs(req.ip) });
     return false;
   }
-  const auth = req.headers['x-pin'] || req.query?.pin || '';
-  if (auth !== config.pin) {
-    recordFailure(req.ip);
-    reply.code(401).send({ error: 'invalid_pin' });
-    return false;
-  }
-  recordSuccess(req.ip);
+  // Primary: HttpOnly session cookie (never readable by JS)
+  const token = sessionToken(req);
+  if (token && validateSession(token)) { recordSuccess(req.ip); return; }
+  // Fallback: x-pin header (API clients / legacy)
+  const headerPin = req.headers['x-pin'] || '';
+  if (headerPin && headerPin === config.pin) { recordSuccess(req.ip); return; }
+  recordFailure(req.ip);
+  reply.code(401).send({ error: 'invalid_pin' });
+  return false;
 }
 
 export default async function panelRoutes(app) {
-  // Expose PIN-check endpoint so the frontend can verify before storing.
+  // ── Security headers on every response ───────────────────────────────────
+  // X-Frame-Options + frame-ancestors: prevent clickjacking.
+  // X-Content-Type-Options: no MIME sniffing.
+  // Referrer-Policy: no referrer leaks to external hosts.
+  // CSP: only our own scripts/styles; no inline scripts (XSS hardening).
+  app.addHook('onSend', (_req, reply, _payload, done) => {
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    const ct = String(reply.getHeader('content-type') || '');
+    if (ct.includes('text/html')) {
+      reply.header('Content-Security-Policy', [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'", // inline style= attrs in HTML
+        "img-src 'self' data: blob:",
+        "connect-src 'self' wss: ws:",
+        "media-src blob:",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+      ].join('; '));
+    }
+    done();
+  });
+
+  // ── CORS: reject cross-origin API requests ────────────────────────────────
+  // Same-origin fetch/XHR does NOT send an Origin header (in most browsers).
+  // Cross-origin requests ALWAYS send Origin. Reject anything that comes from
+  // a different origin than our own Host header.
+  app.addHook('onRequest', (req, reply, done) => {
+    if (!req.url?.startsWith('/api/')) { done(); return; }
+    const origin = req.headers.origin;
+    if (!origin) { done(); return; } // same-origin, no header
+    const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+    const proto = req.headers['x-forwarded-proto'] || 'http';
+    if (origin !== `${proto}://${host}`) {
+      reply.code(403).send({ error: 'forbidden_origin' });
+      return;
+    }
+    done();
+  });
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  // POST /api/auth — verify PIN, set HttpOnly session cookie on success.
   app.post('/api/auth', async (req, reply) => {
-    if (!config.pin) return { ok: true };
+    if (!config.pin) return reply.send({ ok: true });
     if (isLocked(req.ip)) {
       return reply.code(429).send({ error: 'too_many_attempts', retryAfterMs: lockoutRemainingMs(req.ip) });
     }
-    const { pin } = req.body || {};
-    if (pin !== config.pin) {
+    const body = req.body || {};
+    if (typeof body.pin !== 'string') {
+      return reply.code(400).send({ error: 'pin_required' });
+    }
+    if (body.pin !== config.pin) {
       recordFailure(req.ip);
-      return reply.code(401).send({ error: 'invalid_pin' });
+      const ms = lockoutRemainingMs(req.ip);
+      return reply.code(401).send({ error: 'invalid_pin', ...(ms ? { retryAfterMs: ms } : {}) });
     }
     recordSuccess(req.ip);
-    return { ok: true };
+    const token = createSession();
+    return reply.header('Set-Cookie', cookieSet(token)).send({ ok: true });
+  });
+
+  // POST /api/logout — clear session cookie.
+  app.post('/api/logout', async (req, reply) => {
+    const token = sessionToken(req);
+    deleteSession(token);
+    return reply.header('Set-Cookie', cookieSet('deleted', 0)).send({ ok: true });
   });
   app.get('/api/accounts', async (req, reply) => {
     if (checkPin(req, reply) === false) return;

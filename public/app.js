@@ -1,15 +1,10 @@
 const $ = (s) => document.querySelector(s);
 
-/* ── PIN storage ── */
-function getPin() { try { return localStorage.getItem('pin') || ''; } catch { return ''; } }
-function setPin(p) { try { localStorage.setItem('pin', p); } catch {} }
-
 /* ── API helper ── */
+// Session is handled by HttpOnly cookie — no PIN in JS, no PIN in headers.
 const api = (path, opts = {}) => {
-  const pin = getPin();
   const headers = {
     ...(opts.body ? { 'content-type': 'application/json' } : {}),
-    ...(pin ? { 'x-pin': pin } : {}),
     ...(opts.headers || {}),
   };
   return fetch(path, { credentials: 'same-origin', ...opts, headers });
@@ -320,8 +315,7 @@ function buildAccountCard(a, delay) {
       </div>
     </div>`;
 
-  const pin = getPin();
-  const viewUrl = `${location.origin}/account/login?ref=${encodeURIComponent(a.ref)}${pin ? `&p=${encodeURIComponent(pin)}` : ''}`;
+  const viewUrl = `${location.origin}/account/login?ref=${encodeURIComponent(a.ref)}`;
   card.querySelector('.btn-view').href = viewUrl;
   card.querySelector('.f-link').value = viewUrl;
   card.querySelector('.btn-copy').onclick = async (e) => {
@@ -361,11 +355,12 @@ function buildAccountCard(a, delay) {
     setTimeout(() => btn.textContent = 'Zapisz', 2000);
   };
 
-  /* cookies download */
+  /* cookies download — session cookie is sent automatically */
   card.querySelector('.btn-dl').onclick = () => {
-    const pin = getPin();
-    const url = `/api/accounts/${encodeURIComponent(a.id)}/cookies${pin ? `?pin=${encodeURIComponent(pin)}` : ''}`;
-    Object.assign(document.createElement('a'), { href: url, download: `${a.id}-cookies.json` }).click();
+    Object.assign(document.createElement('a'), {
+      href: `/api/accounts/${encodeURIComponent(a.id)}/cookies`,
+      download: `${a.id}-cookies.json`,
+    }).click();
   };
 
   /* refresh info */
@@ -385,12 +380,10 @@ function buildAccountCard(a, delay) {
 }
 
 async function loadCardInfo(card, a) {
-  const pin = getPin();
-
-  /* screenshot */
+  /* screenshot — cookie is sent with same-origin <img> src requests */
   const thumb = card.querySelector('.acct-thumb');
   const ts = Date.now();
-  thumb.src = `/api/accounts/${encodeURIComponent(a.id)}/screenshot?t=${ts}${pin ? `&pin=${encodeURIComponent(pin)}` : ''}`;
+  thumb.src = `/api/accounts/${encodeURIComponent(a.id)}/screenshot?t=${ts}`;
   thumb.style.display = 'block';
   thumb.style.opacity = '0.5';
   thumb.onload = () => { thumb.style.opacity = '1'; };
@@ -481,11 +474,11 @@ $('#dumpCookiesBtn')?.addEventListener('click', async () => {
    LOGIN / BOOT
 ══════════════════════════════════════════════════════════ */
 function showLogin() {
-  location.replace('/login.html');
+  location.replace('/login');
 }
 
-$('#logoutBtn').addEventListener('click', () => {
-  try { localStorage.removeItem('pin'); } catch {}
+$('#logoutBtn').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
   showLogin();
 });
 
@@ -604,10 +597,9 @@ function openMailStatsModal(a) {
   closeBtn.onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
 
-  // Use SSE endpoint to get live progress + final result
-  const pin = getPin();
-  const sseUrl = `/api/accounts/${encodeURIComponent(a.id)}/mail-stats/progress${pin ? `?pin=${encodeURIComponent(pin)}` : ''}`;
-  const es = new EventSource(sseUrl);
+  // SSE — session cookie is sent automatically with same-origin EventSource
+  const sseUrl = `/api/accounts/${encodeURIComponent(a.id)}/mail-stats/progress`;
+  const es = new EventSource(sseUrl, { withCredentials: true });
 
   es.onmessage = (ev) => {
     if (closed) { es.close(); return; }

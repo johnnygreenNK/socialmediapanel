@@ -1,29 +1,53 @@
 const $ = (s) => document.querySelector(s);
 
-function setPin(p) { try { localStorage.setItem('pin', p); } catch {} }
-
-// Already logged in? Skip straight to the panel.
+// Already authenticated? Skip straight to the panel.
+// The session cookie is sent automatically — no JS-side PIN needed.
 (async () => {
   try {
-    const pin = localStorage.getItem('pin') || '';
-    const res = await fetch('/api/accounts', { headers: pin ? { 'x-pin': pin } : {} });
-    if (res.ok) { location.replace('/'); }
+    const res = await fetch('/api/accounts', { credentials: 'same-origin' });
+    if (res.ok) location.replace('/');
   } catch {}
 })();
 
+let countdownTimer = null;
+
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  clearInterval(countdownTimer);
+
   const pin = $('#pinInput').value;
+  const errEl = $('#pinError');
+  errEl.classList.remove('visible');
+
   const res = await fetch('/api/auth', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ pin }),
   });
+
   if (res.ok) {
-    setPin(pin);
     location.replace('/');
-  } else {
-    $('#pinError').classList.add('visible');
-    $('#pinInput').select();
+    return;
   }
+
+  const data = await res.json().catch(() => ({}));
+  if (data.retryAfterMs) {
+    const until = Date.now() + data.retryAfterMs;
+    const tick = () => {
+      const left = Math.ceil((until - Date.now()) / 1000);
+      if (left <= 0) {
+        clearInterval(countdownTimer);
+        errEl.textContent = 'Spróbuj ponownie';
+        return;
+      }
+      errEl.textContent = `Zbyt wiele prób — poczekaj ${left}s`;
+    };
+    tick();
+    countdownTimer = setInterval(tick, 1000);
+  } else {
+    errEl.textContent = 'Nieprawidłowy PIN';
+  }
+  errEl.classList.add('visible');
+  $('#pinInput').select();
 });
