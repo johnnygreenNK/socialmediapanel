@@ -95,6 +95,16 @@ body {
   display: flex;
   height: 100vh;
   overflow: hidden;
+  /* Repeat the aurora here: overflow:hidden + scroll containers inside create
+     new compositing layers that cannot reach the body backdrop. Without this,
+     backdrop-filter on .add-box etc. blurs browser-white instead of the aurora,
+     making every glass panel render as near-white instead of blue glass. */
+  background:
+    radial-gradient(ellipse 80% 60% at 70% 120%, rgba(100,30,200,.55) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 55% at 8%  5%,   rgba(20,100,230,.65) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 45% at 95% 12%,  rgba(0,180,220,.3)  0%, transparent 50%),
+    radial-gradient(ellipse 60% 70% at 40% 85%,  rgba(0,60,200,.4)   0%, transparent 50%),
+    linear-gradient(155deg, #060d22 0%, #0d2654 28%, #122d6b 55%, #0a1d4e 80%, #07122e 100%);
 }
 
 /* ── Sidebar — Vista Aero glass panel ─────────────────────── */
