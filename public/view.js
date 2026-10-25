@@ -10,7 +10,11 @@ function fail(msg) {
   document.body.innerHTML = `<p style="color:#fff;padding:2em;font:16px sans-serif">${msg}</p>`;
 }
 
-viewer.onReady = () => { if (overlay) overlay.classList.add('hidden'); };
+let _ready = false;
+viewer.onReady = () => { _ready = true; if (overlay) overlay.classList.add('hidden'); };
+viewer.onclose = (ev) => {
+  if (!_ready) fail(`Błąd połączenia (${ev.code || 'WS closed'}).`);
+};
 
 if (!ref) { fail('Brak ref. Wróć do panelu.'); }
 else {
