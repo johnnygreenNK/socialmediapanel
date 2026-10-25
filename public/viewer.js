@@ -34,7 +34,7 @@ class SocialPanelViewer {
       if (msg.t === 'frame') this._drawFrame(msg.data);
     };
     ws.onclose = (ev) => { if (this.onclose) this.onclose(ev); };
-    ws.onopen  = () => { this._attachInput(); this._sendSize(); if (this.onReady) this.onReady(); if (this.onopen) this.onopen(); };
+    ws.onopen  = () => { this._attachInput(); this._sendSize(); if (this.onopen) this.onopen(); };
   }
 
   // Decode JPEG via createImageBitmap (off-main-thread where supported) and draw to canvas.

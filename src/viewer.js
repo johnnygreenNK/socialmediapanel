@@ -1,9 +1,11 @@
-// Live viewer WebSocket — auth + input forwarding only.
-// Screencast removed: browser runs in the background, no frame stream.
+// Live viewer WebSocket — auth, input forwarding, and pull-based screenshot loop.
+// Screenshots are taken every ~1 s (much lighter than CDP screencast push).
 
 import { getAccount, getAccountByRef } from './accounts.js';
 import * as browser from './browser.js';
 import { isLocked, recordFailure, recordSuccess } from './pinGuard.js';
+
+const SCREENSHOT_INTERVAL_MS = 1000;
 
 export default async function viewerRoutes(app) {
   app.get('/api/accounts/:id/viewer', { websocket: true }, async (socket, req) => {
@@ -59,6 +61,35 @@ export default async function viewerRoutes(app) {
     let currentSize = { width: vp.width, height: vp.height };
     let dpr = 1;
 
+    // --- screenshot loop ---
+    let screenshotTimer = null;
+    let closed = false;
+
+    function send(obj) {
+      try {
+        if (socket.readyState === 1 /* OPEN */) socket.send(JSON.stringify(obj));
+      } catch { /* ignore */ }
+    }
+
+    async function sendScreenshot() {
+      if (closed) return;
+      try {
+        const buf = await page.screenshot({ type: 'jpeg', quality: 65, timeout: 4000 });
+        if (!closed) send({ t: 'frame', data: buf.toString('base64') });
+      } catch (err) {
+        const msg = String(err?.message || '');
+        if (msg.includes('Target closed') || msg.includes('Target page')) {
+          closed = true;
+          socket.close(4409, 'session_not_running');
+          return;
+        }
+      }
+      if (!closed) screenshotTimer = setTimeout(sendScreenshot, SCREENSHOT_INTERVAL_MS);
+    }
+
+    // First screenshot immediately, then loop
+    sendScreenshot();
+
     // --- inbound: resize + input events ---
     onMessage = async (raw) => {
       let msg;
@@ -79,6 +110,9 @@ export default async function viewerRoutes(app) {
             width, height, deviceScaleFactor: dpr, mobile: false,
             screenWidth: width, screenHeight: height,
           });
+          // Take a screenshot right away after resize
+          clearTimeout(screenshotTimer);
+          sendScreenshot();
         } else if (msg.t === 'mouse') {
           await cdp.send('Input.dispatchMouseEvent', {
             type: msg.type,
@@ -90,6 +124,9 @@ export default async function viewerRoutes(app) {
             deltaY: msg.deltaY || 0,
             modifiers: msg.modifiers || 0,
           });
+          // Refresh screen after mouse interaction
+          clearTimeout(screenshotTimer);
+          screenshotTimer = setTimeout(sendScreenshot, 150);
         } else if (msg.t === 'key') {
           await cdp.send('Input.dispatchKeyEvent', {
             type: msg.type,
@@ -97,6 +134,8 @@ export default async function viewerRoutes(app) {
             windowsVirtualKeyCode: msg.keyCode,
             modifiers: msg.modifiers || 0,
           });
+          clearTimeout(screenshotTimer);
+          screenshotTimer = setTimeout(sendScreenshot, 150);
         }
       } catch { /* ignore transient CDP errors */ }
     };
@@ -104,6 +143,8 @@ export default async function viewerRoutes(app) {
 
     // --- cleanup ---
     const cleanup = async () => {
+      closed = true;
+      clearTimeout(screenshotTimer);
       try { await cdp.detach(); } catch { /* ignore */ }
     };
     socket.on('close', cleanup);
