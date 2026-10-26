@@ -286,13 +286,13 @@ export default async function panelRoutes(app) {
   app.get('/', async (req, reply) => {
     const token = sessionToken(req);
     if (token && validateSession(token)) { noStore(reply); return reply.sendFile('index.html'); }
-    return reply.redirect(302, '/login');
+    return reply.redirect('/login');
   });
 
   app.get('/adduser', async (req, reply) => {
     const token = sessionToken(req);
     if (token && validateSession(token)) { noStore(reply); return reply.sendFile('adduser.html'); }
-    return reply.redirect(302, '/login');
+    return reply.redirect('/login');
   });
 
   app.get('/login', async (req, reply) => {
