@@ -33,14 +33,23 @@ await app.register(fstatic, {
 
 app.get('/healthz', async () => ({ ok: true }));
 
-// A single uncaught rejection anywhere (e.g. a Playwright call racing a
-// browser crash) used to take the entire panel down with it, killing every
-// account's session at once. Log it and keep running instead.
+// Playwright calls racing a browser crash produce unhandled rejections —
+// log them and keep running so one crashed session doesn't kill all others.
+// For uncaught exceptions we distinguish Playwright/CDP errors (safe to
+// continue) from anything else, which gets re-thrown after logging because
+// an unknown exception may leave the process in a broken state.
 process.on('unhandledRejection', (err) => {
-  app.log.error({ err }, 'unhandled rejection (ignored, server stays up)');
+  app.log.error({ err }, 'unhandled rejection (server stays up)');
 });
 process.on('uncaughtException', (err) => {
-  app.log.error({ err }, 'uncaught exception (ignored, server stays up)');
+  const msg = String(err?.message || '');
+  const isPlaywright = /Target closed|Target page|Session closed|Browser.*closed|Protocol error/i.test(msg);
+  if (isPlaywright) {
+    app.log.error({ err }, 'uncaught Playwright error (server stays up)');
+    return;
+  }
+  app.log.fatal({ err }, 'uncaught exception — restarting');
+  process.exit(1);
 });
 
 async function shutdown(signal) {

@@ -7,12 +7,23 @@ function int(name, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// Strip protocol prefix and trailing slashes so PUBLIC_HOST can be set as
+// either "example.com" or "https://example.com" without breaking link
+// generation. We only want the bare host[:port] part.
+function parsePublicHost(raw) {
+  if (!raw) return '';
+  try {
+    // If it already looks like a URL, extract just the host.
+    if (/^https?:\/\//i.test(raw)) return new URL(raw).host;
+  } catch { /* fall through to plain string */ }
+  // Plain host string — strip any accidental leading/trailing whitespace.
+  return raw.trim().replace(/\/$/, '');
+}
+
 export const config = {
   host: process.env.HOST || '127.0.0.1',
   port: int('PORT', 8080),
   dataDir: process.env.DATA_DIR || '/data',
-  // PIN required when the server is exposed beyond localhost.
-  // Set PIN= in .env; leave empty to skip (safe only on 127.0.0.1).
   // 'chrome' uses the system-installed Google Chrome (better for Google/Gmail).
   // Leave empty to use Playwright's bundled Chromium.
   browserChannel: process.env.BROWSER_CHANNEL || '',
@@ -20,9 +31,9 @@ export const config = {
   proxyServer: process.env.PROXY_SERVER || '',
   proxyUsername: process.env.PROXY_USERNAME || '',
   proxyPassword: process.env.PROXY_PASSWORD || '',
-  // Public IP/host of this server — used for neko's WebRTC NAT1TO1 setting
-  // so ICE candidates point somewhere the viewer's browser can reach.
-  publicHost: process.env.PUBLIC_HOST || '',
+  // Public IP/host of this server — used for generating access links.
+  // Accepts "example.com", "1.2.3.4:8080", or "https://example.com".
+  publicHost: parsePublicHost(process.env.PUBLIC_HOST),
   // Optional: mirrors the live activity log to a Telegram chat and sends
   // cookies there automatically once a login is detected. Both must be set
   // for it to do anything — see src/telegram.js.

