@@ -10,7 +10,7 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { randomInt } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { config } from './config.js';
 
 export const DEFAULT_ACCOUNTS = [
@@ -82,11 +82,11 @@ export async function getAccountByRef(ref) {
 }
 
 function genRef() {
-  // crypto.randomInt, not Math.random() — this ref is the only thing
-  // standing between a guessed URL and live control of a logged-in account
-  // (see the PIN-in-the-link convenience param), so it needs to be
-  // unpredictable, not just "looks random".
-  return String(randomInt(100_000_000, 1_000_000_000));
+  // 96 bits of entropy (24 hex chars) — brute-forcing is infeasible.
+  // Existing accounts keep their legacy 9-digit numeric refs; this only
+  // affects newly created accounts. getAccountByRef() is a plain string
+  // comparison so both formats work without any migration.
+  return randomBytes(12).toString('hex');
 }
 
 export async function saveAccount(acc) {
