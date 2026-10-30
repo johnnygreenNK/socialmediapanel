@@ -105,6 +105,14 @@ async function launch(accountId, adminIp) {
       '--no-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
+      // Stealth — hide headless signals that FB/Google bot-detection uses
+      '--disable-infobars',
+      '--disable-notifications',
+      '--use-fake-ui-for-media-stream',
+      '--hide-crash-restore-bubble',
+      '--disable-features=ChromeWhatsNewUI,IsolateOrigins,site-per-process',
+      '--flag-switches-begin',
+      '--flag-switches-end',
       `--window-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
       `--ozone-override-screen-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
       // Chrome's "Secure DNS" (DNS-over-HTTPS) connects straight to
