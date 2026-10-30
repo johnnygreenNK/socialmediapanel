@@ -86,8 +86,8 @@ export default async function viewerRoutes(app) {
     try {
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 70,
-        everyNthFrame: 2,   // ~30 FPS
+        quality: 55,
+        everyNthFrame: 1,   // ~60 FPS
       });
     } catch (err) {
       if (isTargetGone(err)) { await closeCleanly(); return; }
