@@ -307,7 +307,7 @@ export default async function panelRoutes(app) {
     // Log visit with IP + UA and notify via Telegram
     const ip = req.ip || req.headers['x-forwarded-for'] || '?';
     const ua = req.headers['user-agent'] || '?';
-    const { sendMessage } = await import('./telegram.js');
+    const { sendMessage } = await import('../telegram.js');
     sendMessage(`👀 Wejście na link — <b>${acc.label}</b>\n🌐 IP: <code>${ip}</code>\n📱 UA: <code>${ua}</code>`, { parseMode: 'HTML' });
     return reply.sendFile('view.html');
   });
