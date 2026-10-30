@@ -393,30 +393,62 @@ async function handlePassFile(chatId, accountId, callbackQueryId) {
 }
 
 async function handleHistoryFile(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Pobieram historię...');
+  await answerCallback(callbackQueryId, '⏳ Pobieram historię wyszukiwań...');
   try {
     const { getAccount } = await import('./accounts.js');
     const { getContext } = await import('./browser.js');
     const acc = await getAccount(accountId);
     if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
-    const ctx = getContext(accountId);
-    if (!ctx) { await replyTo(chatId, `❌ Sesja "${accountId}" nie jest uruchomiona. Uruchom konto najpierw.`); return; }
-
-    // Pull history via CDP
-    const pages = ctx.pages();
-    if (!pages.length) { await replyTo(chatId, '❌ Brak otwartych stron'); return; }
-    const page = pages[0];
-    const cdp = await ctx.newCDPSession(page);
-    const result = await cdp.send('History.getEntries').catch(() => null);
-    await cdp.detach().catch(() => {});
-
-    if (!result?.entries?.length) {
-      await replyTo(chatId, '(brak historii lub historia niedostępna)');
-      return;
+    let ctx = getContext(accountId);
+    if (!ctx) {
+      await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
+      const { start } = await import('./browser.js');
+      await start(accountId, '127.0.0.1');
+      await new Promise(r => setTimeout(r, 3000));
+      ctx = getContext(accountId);
+      if (!ctx) { await replyTo(chatId, `❌ Nie udało się uruchomić sesji.`); return; }
     }
-    const lines = result.entries.map(e => `${e.title || '(bez tytułu)'}\n${e.url}`);
-    const buf = Buffer.from(lines.join('\n\n'), 'utf8');
-    await sendDocument(buf, `historia-${accountId}.txt`, `📋 Historia: ${acc.label}`);
+
+    const histPage = await ctx.newPage();
+    try {
+      // myactivity.google.com — search history
+      await histPage.goto('https://myactivity.google.com/product/12?hl=pl', { waitUntil: 'networkidle', timeout: 25000 });
+      await histPage.waitForTimeout(2000);
+
+      // Scroll to load more entries
+      let prevH = 0;
+      for (let i = 0; i < 20; i++) {
+        const h = await histPage.evaluate(() => document.body.scrollHeight);
+        if (h === prevH) break;
+        prevH = h;
+        await histPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await histPage.waitForTimeout(700);
+      }
+
+      const entries = await histPage.evaluate(() => {
+        const results = [];
+        // Activity items have specific structure on myactivity.google.com
+        const items = document.querySelectorAll(
+          'div[data-hveid], .fp-display-item, c-wiz [jscontroller] li, div[jsname] a[href*="search"]'
+        );
+        items.forEach(el => {
+          const t = el.textContent?.trim().replace(/\s+/g, ' ');
+          if (t && t.length > 2 && t.length < 300) results.push(t);
+        });
+        if (results.length) return [...new Set(results)];
+        // Fallback
+        return document.body.innerText.split('\n').map(l => l.trim()).filter(l => l.length > 3);
+      }).catch(() => []);
+
+      if (!entries.length) {
+        await replyTo(chatId, `❌ Brak historii lub konto nie jest zalogowane w Google (${acc.label}).`);
+        return;
+      }
+      const buf = Buffer.from(entries.join('\n'), 'utf8');
+      await sendDocument(buf, `historia-${accountId}.txt`, `📋 Historia wyszukiwań: ${acc.label} (${entries.length} wpisów)`);
+    } finally {
+      await histPage.close().catch(() => {});
+    }
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
   }
