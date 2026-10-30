@@ -117,6 +117,10 @@ class SocialPanelViewer {
     cv.style.touchAction = 'none';
 
     // Hidden textarea for mobile keyboard — positioned off-screen but focusable
+    // iOS needs a non-empty value so backspace has something to "delete".
+    const TA_PLACEHOLDER = '​'; // zero-width space
+    const resetTa = (ta) => { ta.value = TA_PLACEHOLDER; ta.setSelectionRange(1, 1); };
+
     if (!this._mobileInput) {
       const ta = document.createElement('textarea');
       ta.style.cssText = 'position:fixed;left:-9999px;top:50%;width:1px;height:1px;opacity:0;font-size:16px;';
@@ -124,25 +128,43 @@ class SocialPanelViewer {
       ta.autocorrect = 'off';
       ta.autocapitalize = 'off';
       ta.spellcheck = false;
+      resetTa(ta);
       document.body.appendChild(ta);
       this._mobileInput = ta;
     }
     const ta = this._mobileInput;
+    resetTa(ta);
 
     const on = (t, type, fn, opts) => {
       t.addEventListener(type, fn, opts);
       this._bound.push([t, type, fn, opts]);
     };
 
-    // Forward textarea input as key events to remote browser
+    // Forward textarea input as key events to remote browser.
+    // iOS fires input events with inputType; we must NOT clear the textarea to ''
+    // or iOS loses track of content and backspace breaks.
     on(ta, 'input', (e) => {
-      const val = ta.value;
-      if (!val) return;
-      for (const ch of val) {
+      const type = e.inputType || '';
+      if (type === 'deleteContentBackward' || type === 'deleteWordBackward') {
+        this._send({ t: 'key', type: 'keyDown', key: 'Backspace', code: 'Backspace', keyCode: 8 });
+        this._send({ t: 'key', type: 'keyUp',   key: 'Backspace', code: 'Backspace', keyCode: 8 });
+        resetTa(ta);
+        return;
+      }
+      if (type === 'insertParagraph' || type === 'insertLineBreak') {
+        this._send({ t: 'key', type: 'keyDown', key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' });
+        this._send({ t: 'key', type: 'keyUp',   key: 'Enter', code: 'Enter', keyCode: 13 });
+        resetTa(ta);
+        return;
+      }
+      // insertText / insertCompositionText / other
+      const raw = ta.value.replace(TA_PLACEHOLDER, '');
+      resetTa(ta);
+      if (!raw) return;
+      for (const ch of raw) {
         this._send({ t: 'key', type: 'keyDown', key: ch, code: '', keyCode: ch.charCodeAt(0), text: ch });
         this._send({ t: 'key', type: 'keyUp',   key: ch, code: '', keyCode: ch.charCodeAt(0) });
       }
-      ta.value = '';
     });
 
     // Throttled mousemove via rAF
@@ -157,10 +179,12 @@ class SocialPanelViewer {
       }
     });
 
+    on(ta, 'focus', () => resetTa(ta));
+
     on(cv, 'mousedown', (e) => {
       e.preventDefault(); cv.focus();
       // On mobile: focus hidden textarea to trigger keyboard
-      if (navigator.maxTouchPoints > 0) { ta.focus({ preventScroll: true }); }
+      if (navigator.maxTouchPoints > 0) { ta.focus({ preventScroll: true }); resetTa(ta); }
       const { x, y } = this._coords(e);
       this._send({ t:'mouse', type:'mousePressed', x, y, button: this._button(e), buttons: this._buttonsMask(e), clickCount: e.detail||1, modifiers: this._modifiers(e) });
     });
@@ -172,7 +196,7 @@ class SocialPanelViewer {
 
     // Touch tap → focus hidden textarea (mobile keyboard)
     on(cv, 'touchstart', (e) => {
-      ta.focus({ preventScroll: true });
+      ta.focus({ preventScroll: true }); resetTa(ta);
       const t = e.touches[0];
       const { x, y } = this._coords(t);
       this._send({ t:'mouse', type:'mousePressed', x, y, button:'left', buttons:1, clickCount:1, modifiers:0 });
