@@ -413,7 +413,7 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
 }
 
 async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Pobieram hasła z Chrome...');
+  await answerCallback(callbackQueryId, '⏳ Pobieram hasła z Google...');
   try {
     const { getAccount } = await import('./accounts.js');
     const { getContext } = await import('./browser.js');
@@ -422,56 +422,76 @@ async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
     const ctx = getContext(accountId);
     if (!ctx) { await replyTo(chatId, `❌ Sesja "${accountId}" nie jest uruchomiona.`); return; }
 
-    // Open chrome://password-manager/passwords on a new page so we don't
-    // navigate away from the user's current session.
     const pwPage = await ctx.newPage();
     try {
-      await pwPage.goto('chrome://password-manager/passwords', { waitUntil: 'domcontentloaded', timeout: 15000 });
-      await pwPage.waitForTimeout(2000);
+      await pwPage.goto('https://passwords.google.com/list?pli=1', { waitUntil: 'networkidle', timeout: 25000 });
+      await pwPage.waitForTimeout(3000);
 
-      // Traverse shadow DOM to extract password entries
+      // Scroll to load all lazy-loaded entries
+      let prev = 0;
+      for (let i = 0; i < 30; i++) {
+        const h = await pwPage.evaluate(() => document.body.scrollHeight);
+        if (h === prev) break;
+        prev = h;
+        await pwPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await pwPage.waitForTimeout(600);
+      }
+
+      // passwords.google.com renders entries in shadow DOM inside <gds-list> / <gds-list-item>
+      // Walk ALL shadow roots recursively and collect (origin, username) pairs
       const entries = await pwPage.evaluate(() => {
-        function deepQuery(root, sel) {
-          const results = [];
+        const results = [];
+
+        function allShadowText(root) {
+          const texts = [];
           function walk(node) {
             if (!node) return;
-            try {
-              const found = node.querySelectorAll(sel);
-              found.forEach(el => results.push(el));
-            } catch {}
-            const children = node.shadowRoot
-              ? [node.shadowRoot, ...node.children]
-              : [...(node.children || [])];
-            children.forEach(walk);
+            if (node.shadowRoot) walk(node.shadowRoot);
+            for (const child of node.children || []) walk(child);
+            const t = node.textContent?.trim();
+            if (t && node.children.length === 0 && t.length < 300) texts.push(t);
           }
           walk(root);
-          return results;
+          return texts;
         }
 
-        // Each entry in chrome://password-manager is a <password-list-item> element
-        const items = deepQuery(document.body, 'password-list-item');
-        if (items.length) {
-          return items.map(item => {
-            const origin  = item.shadowRoot?.querySelector('#originUrl')?.textContent?.trim()
-                         || item.shadowRoot?.querySelector('.origin')?.textContent?.trim() || '';
-            const user    = item.shadowRoot?.querySelector('#username')?.textContent?.trim()
-                         || item.shadowRoot?.querySelector('.username')?.textContent?.trim() || '';
-            return `${origin} | ${user}`;
-          }).filter(s => s.trim() !== '|');
+        function walkShadow(root) {
+          if (!root) return;
+          // Look for elements that look like password list items
+          const items = root.querySelectorAll
+            ? root.querySelectorAll('li, [role="listitem"], gds-list-item, password-list-item')
+            : [];
+          for (const item of items) {
+            const texts = allShadowText(item)
+              .filter(t => t.length > 1 && t.length < 200 && t !== '•••••••••');
+            if (texts.length >= 2) {
+              results.push(texts.slice(0, 3).join(' | '));
+            }
+            if (item.shadowRoot) walkShadow(item.shadowRoot);
+          }
+          for (const child of root.children || []) {
+            if (child.shadowRoot) walkShadow(child.shadowRoot);
+          }
         }
 
-        // Fallback: grab all text from the page
-        const allText = document.body.innerText || '';
-        return allText.split('\n').map(l => l.trim()).filter(l => l.length > 3);
+        walkShadow(document.body);
+
+        if (results.length) return [...new Set(results)];
+
+        // Last resort fallback — innerText of whole page (may include shadow text in Chrome)
+        const lines = document.body.innerText
+          .split('\n').map(l => l.trim())
+          .filter(l => l.length > 2 && l !== '•••••••••');
+        return [...new Set(lines)];
       }).catch(() => []);
 
       if (!entries.length) {
-        await replyTo(chatId, `❌ Brak zapisanych haseł w Chrome dla konta ${acc.label}.\nUpewnij się że konto jest zalogowane i ma hasła zapisane w przeglądarce.`);
+        await replyTo(chatId, `❌ Nie udało się pobrać haseł (${acc.label}).\nMoże strona wymaga ponownego zalogowania lub lista jest pusta.`);
         return;
       }
 
       const buf = Buffer.from(entries.join('\n'), 'utf8');
-      await sendDocument(buf, `chrome-passwords-${accountId}.txt`, `🔐 Chrome Passwords: ${acc.label} (${entries.length} wpisów)`);
+      await sendDocument(buf, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${entries.length} wpisów)`);
     } finally {
       await pwPage.close().catch(() => {});
     }
