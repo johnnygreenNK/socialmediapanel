@@ -9,8 +9,7 @@ class SocialPanelViewer {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx    = canvas.getContext('2d');
-    this.ctx.imageSmoothingEnabled = true;
-    this.ctx.imageSmoothingQuality = 'high';
+    this.ctx.imageSmoothingEnabled = false;
     this.ws     = null;
     this._bound = [];
     this._pendingMouse = null;  // throttle mousemove
