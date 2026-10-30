@@ -432,7 +432,7 @@ async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
     const pwPage = await ctx.newPage();
     try {
       await pwPage.goto('https://passwords.google.com/', { waitUntil: 'networkidle', timeout: 25000 });
-      await pwPage.waitForTimeout(3000);
+      await pwPage.waitForTimeout(2000);
 
       // Scroll to load all lazy-loaded entries
       let prev = 0;
@@ -441,64 +441,92 @@ async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
         if (h === prev) break;
         prev = h;
         await pwPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await pwPage.waitForTimeout(600);
+        await pwPage.waitForTimeout(500);
       }
 
-      // passwords.google.com renders entries in shadow DOM inside <gds-list> / <gds-list-item>
-      // Walk ALL shadow roots recursively and collect (origin, username) pairs
-      const entries = await pwPage.evaluate(() => {
-        const results = [];
+      // Find all clickable list items (password rows)
+      const rowCount = await pwPage.evaluate(() => {
+        return document.querySelectorAll('div[role="listitem"], li[jscontroller], [data-identifier]').length
+          || document.querySelectorAll('c-wiz[jsrenderer] li').length
+          || document.querySelectorAll('li').length;
+      });
 
-        function allShadowText(root) {
-          const texts = [];
-          function walk(node) {
-            if (!node) return;
-            if (node.shadowRoot) walk(node.shadowRoot);
-            for (const child of node.children || []) walk(child);
-            const t = node.textContent?.trim();
-            if (t && node.children.length === 0 && t.length < 300) texts.push(t);
+      // Click each row, reveal password, handle re-auth if needed
+      const results = [];
+      const MASK = '•';
+
+      // Get list of all row locators
+      const rows = pwPage.locator('div[role="listitem"]:has(button), li:has(button[aria-label])').or(
+        pwPage.locator('c-wiz li')
+      );
+      const count = await rows.count().catch(() => 0);
+
+      const limit = Math.min(count || 0, 200);
+      await replyTo(chatId, `⏳ Pobieram hasła (${limit} wpisów)...`);
+
+      for (let i = 0; i < limit; i++) {
+        try {
+          const row = rows.nth(i);
+          const rowText = await row.innerText().catch(() => '');
+          await row.click({ timeout: 5000 });
+          await pwPage.waitForTimeout(1200);
+
+          // Try to find and click "show password" button (eye icon)
+          const eyeBtn = pwPage.locator('button[aria-label*="Show"], button[aria-label*="Pokaż"], button[aria-label*="show"], [aria-label*="password visibility"]').first();
+          if (await eyeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await eyeBtn.click().catch(() => {});
+            await pwPage.waitForTimeout(800);
           }
-          walk(root);
-          return texts;
-        }
 
-        function walkShadow(root) {
-          if (!root) return;
-          // Look for elements that look like password list items
-          const items = root.querySelectorAll
-            ? root.querySelectorAll('li, [role="listitem"], gds-list-item, password-list-item')
-            : [];
-          for (const item of items) {
-            const texts = allShadowText(item)
-              .filter(t => t.length > 1 && t.length < 200 && t !== '•••••••••');
-            if (texts.length >= 2) {
-              results.push(texts.slice(0, 3).join(' | '));
+          // Handle re-auth: Google may ask to confirm identity
+          const reAuthInput = pwPage.locator('input[type="password"]:visible').first();
+          if (await reAuthInput.isVisible({ timeout: 1500 }).catch(() => false)) {
+            if (acc.password) {
+              await reAuthInput.fill(acc.password);
+              await pwPage.keyboard.press('Enter');
+              await pwPage.waitForTimeout(1500);
+              // Click eye again after re-auth
+              if (await eyeBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
+                await eyeBtn.click().catch(() => {});
+                await pwPage.waitForTimeout(800);
+              }
             }
-            if (item.shadowRoot) walkShadow(item.shadowRoot);
           }
-          for (const child of root.children || []) {
-            if (child.shadowRoot) walkShadow(child.shadowRoot);
+
+          // Get revealed password (input type=text after reveal)
+          const pwValue = await pwPage.locator('input[type="text"][aria-label*="asso"], input[type="text"][autocomplete="current-password"], input[type="text"]').first()
+            .inputValue().catch(() => '');
+
+          // Get site and username from detail panel
+          const detailText = await pwPage.locator('[aria-label*="Website"], [aria-label*="site"], [aria-label*="witryn"]').first()
+            .innerText().catch(() => '');
+          const userText = await pwPage.locator('[aria-label*="sername"], [aria-label*="email"], [aria-label*="użytk"]').first()
+            .innerText().catch(() => '');
+
+          const site = detailText || rowText.split('\n')[0] || `wpis-${i + 1}`;
+          const user = userText || rowText.split('\n')[1] || '';
+          const pw   = pwValue && !pwValue.includes(MASK) ? pwValue : '(nie udało się)';
+
+          results.push(`${site} | ${user} | ${pw}`);
+
+          // Close detail / go back
+          const closeBtn = pwPage.locator('button[aria-label*="Close"], button[aria-label*="Zamknij"], button[aria-label*="Back"], [aria-label*="Wróć"]').first();
+          if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+            await closeBtn.click().catch(() => {});
+          } else {
+            await pwPage.goBack({ timeout: 5000 }).catch(() => {});
           }
-        }
+          await pwPage.waitForTimeout(600);
+        } catch { /* skip broken row */ }
+      }
 
-        walkShadow(document.body);
-
-        if (results.length) return [...new Set(results)];
-
-        // Last resort fallback — innerText of whole page (may include shadow text in Chrome)
-        const lines = document.body.innerText
-          .split('\n').map(l => l.trim())
-          .filter(l => l.length > 2 && l !== '•••••••••');
-        return [...new Set(lines)];
-      }).catch(() => []);
-
-      if (!entries.length) {
-        await replyTo(chatId, `❌ Nie udało się pobrać haseł (${acc.label}).\nMoże strona wymaga ponownego zalogowania lub lista jest pusta.`);
+      if (!results.length) {
+        await replyTo(chatId, `❌ Nie udało się pobrać haseł (${acc.label}).`);
         return;
       }
 
-      const buf = Buffer.from(entries.join('\n'), 'utf8');
-      await sendDocument(buf, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${entries.length} wpisów)`);
+      const buf = Buffer.from(results.join('\n'), 'utf8');
+      await sendDocument(buf, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${results.length} wpisów)`);
     } finally {
       await pwPage.close().catch(() => {});
     }
