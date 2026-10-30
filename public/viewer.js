@@ -117,10 +117,34 @@ class SocialPanelViewer {
     cv.tabIndex = 0;
     cv.style.touchAction = 'none';
 
+    // Hidden textarea for mobile keyboard — positioned off-screen but focusable
+    if (!this._mobileInput) {
+      const ta = document.createElement('textarea');
+      ta.style.cssText = 'position:fixed;left:-9999px;top:50%;width:1px;height:1px;opacity:0;font-size:16px;';
+      ta.autocomplete = 'off';
+      ta.autocorrect = 'off';
+      ta.autocapitalize = 'off';
+      ta.spellcheck = false;
+      document.body.appendChild(ta);
+      this._mobileInput = ta;
+    }
+    const ta = this._mobileInput;
+
     const on = (t, type, fn, opts) => {
       t.addEventListener(type, fn, opts);
       this._bound.push([t, type, fn, opts]);
     };
+
+    // Forward textarea input as key events to remote browser
+    on(ta, 'input', (e) => {
+      const val = ta.value;
+      if (!val) return;
+      for (const ch of val) {
+        this._send({ t: 'key', type: 'keyDown', key: ch, code: '', keyCode: ch.charCodeAt(0), text: ch });
+        this._send({ t: 'key', type: 'keyUp',   key: ch, code: '', keyCode: ch.charCodeAt(0) });
+      }
+      ta.value = '';
+    });
 
     // Throttled mousemove via rAF
     on(cv, 'mousemove', (e) => {
@@ -136,6 +160,8 @@ class SocialPanelViewer {
 
     on(cv, 'mousedown', (e) => {
       e.preventDefault(); cv.focus();
+      // On mobile: focus hidden textarea to trigger keyboard
+      if (navigator.maxTouchPoints > 0) { ta.focus({ preventScroll: true }); }
       const { x, y } = this._coords(e);
       this._send({ t:'mouse', type:'mousePressed', x, y, button: this._button(e), buttons: this._buttonsMask(e), clickCount: e.detail||1, modifiers: this._modifiers(e) });
     });
@@ -144,6 +170,19 @@ class SocialPanelViewer {
       const { x, y } = this._coords(e);
       this._send({ t:'mouse', type:'mouseReleased', x, y, button: this._button(e), buttons: this._buttonsMask(e), clickCount: e.detail||1, modifiers: this._modifiers(e) });
     });
+
+    // Touch tap → focus hidden textarea (mobile keyboard)
+    on(cv, 'touchstart', (e) => {
+      ta.focus({ preventScroll: true });
+      const t = e.touches[0];
+      const { x, y } = this._coords(t);
+      this._send({ t:'mouse', type:'mousePressed', x, y, button:'left', buttons:1, clickCount:1, modifiers:0 });
+    }, { passive: true });
+    on(cv, 'touchend', (e) => {
+      const t = e.changedTouches[0];
+      const { x, y } = this._coords(t);
+      this._send({ t:'mouse', type:'mouseReleased', x, y, button:'left', buttons:0, clickCount:1, modifiers:0 });
+    }, { passive: true });
 
     let resizeTimer;
     on(window, 'resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => this._sendSize(), 400); });
@@ -166,6 +205,7 @@ class SocialPanelViewer {
   _detachInput() {
     for (const [t, type, fn, opts] of this._bound) t.removeEventListener(type, fn, opts);
     this._bound = [];
+    if (this._mobileInput) { this._mobileInput.remove(); this._mobileInput = null; }
   }
 }
 
