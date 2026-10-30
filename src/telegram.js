@@ -431,7 +431,7 @@ async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
 
     const pwPage = await ctx.newPage();
     try {
-      await pwPage.goto('https://passwords.google.com/list?pli=1', { waitUntil: 'networkidle', timeout: 25000 });
+      await pwPage.goto('https://passwords.google.com/', { waitUntil: 'networkidle', timeout: 25000 });
       await pwPage.waitForTimeout(3000);
 
       // Scroll to load all lazy-loaded entries
