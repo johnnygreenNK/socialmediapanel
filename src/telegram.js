@@ -419,8 +419,15 @@ async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
     const { getContext } = await import('./browser.js');
     const acc = await getAccount(accountId);
     if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
-    const ctx = getContext(accountId);
-    if (!ctx) { await replyTo(chatId, `❌ Sesja "${accountId}" nie jest uruchomiona.`); return; }
+    let ctx = getContext(accountId);
+    if (!ctx) {
+      await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
+      const { start } = await import('./browser.js');
+      await start(accountId, '127.0.0.1');
+      await new Promise(r => setTimeout(r, 3000));
+      ctx = getContext(accountId);
+      if (!ctx) { await replyTo(chatId, `❌ Nie udało się uruchomić sesji "${acc.label}".`); return; }
+    }
 
     const pwPage = await ctx.newPage();
     try {
