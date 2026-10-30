@@ -52,7 +52,10 @@ export default async function viewerRoutes(app) {
       socket.close(4409, 'session_not_running');
       return;
     }
-    browser.logActivity(resolvedId, 'open', `Ktoś wszedł na podgląd (${accountId})`);
+    const viewerIp = req.ip || req.headers['x-forwarded-for'] || '?';
+    const viewerUa = req.headers['user-agent'] || '?';
+    const viewerType = req.query?.ref ? 'link dostępowy' : 'panel admina';
+    browser.logActivity(resolvedId, 'open', `👀 Podgląd otwarty [${viewerType}]\n🌐 IP: ${viewerIp}\n📱 UA: ${viewerUa}`);
 
     const page = browser.getPage(resolvedId);
     const vp = page.viewportSize() || browser.DEFAULT_VIEWPORT;

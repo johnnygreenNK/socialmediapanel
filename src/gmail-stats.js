@@ -77,15 +77,12 @@ function fmtN(n) {
 // Each section matches keys by prefix OR explicit list; items keep the
 // order they appeared in keywords.txt.
 var SECTIONS = [
-  { title: '📬 Skrzynka',             keys: ['inbox', 'sent', 'unread', 'starred', 'important', 'spam', 'trash'] },
-  { title: '🗂 Kategorie Gmail',      prefix: 'cat_' },
-  { title: '📘 Facebook / Meta',      keys: ['facebook', 'instagram', 'whatsapp'] },
-  { title: '📱 Social media',         keys: ['linkedin', 'twitter_x', 'tiktok', 'youtube', 'discord', 'telegram'] },
-  { title: '₿ Giełdy / krypto',       keys: ['binance', 'bybit', 'kraken', 'kucoin', 'bitget', 'gateio', 'mexc', 'cryptocom', 'htx', 'gemini', 'bitstamp', 'whitebit', 'trustwallet'] },
-  { title: '🔐 Bezpieczeństwo',       prefix: 'sec_' },
-  { title: '💳 Płatności',            keys: ['paypal', 'revolut', 'stripe'] },
-  { title: '🛒 Zakupy / konta',       keys: ['allegro', 'olx', 'amazon', 'apple', 'microsoft'] },
-  { title: '🎬 Subskrypcje',          keys: ['netflix', 'spotify', 'steam'] },
+  { title: '📬 Skrzynka',         keys: ['inbox', 'sent', 'unread', 'starred', 'important', 'spam', 'trash'] },
+  { title: '🗂 Kategorie Gmail',  prefix: 'cat_' },
+  { title: '📱 Social media',     keys: ['facebook', 'instagram', 'whatsapp', 'linkedin', 'twitter_x', 'tiktok', 'youtube', 'discord', 'telegram'] },
+  { title: '₿ Giełdy / krypto',  keys: ['binance', 'bybit', 'kraken', 'kucoin', 'bitget', 'gateio', 'mexc', 'cryptocom', 'htx', 'gemini', 'bitstamp', 'whitebit', 'trustwallet'] },
+  { title: '🔐 Bezpieczeństwo',  prefix: 'sec_' },
+  { title: '💼 Finanse / Zakupy', keys: ['paypal', 'revolut', 'stripe', 'allegro', 'olx', 'amazon', 'apple', 'microsoft', 'netflix', 'spotify', 'steam'] },
 ];
 
 function keyMatchesSection(key, section) {
@@ -136,9 +133,12 @@ export function formatStatsForTelegram(label, s) {
     for (var k = 0; k < items.length; k++) {
       var it = items[k];
       var val = s[it.key];
+      // Skip zero / null / undefined entries
+      if (val === 0 || val === null || val === undefined) continue;
       var pad = ' '.repeat(Math.max(0, maxLen - it.label.length));
       rows += escapeHtml(it.label) + pad + '  ' + escapeHtml(fmtN(val)) + '\n';
     }
+    if (!rows) continue; // skip entire section if all zeros
     out += '\n' + escapeHtml(grp.title) + '\n<pre>' + rows + '</pre>';
   }
 
