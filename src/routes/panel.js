@@ -113,7 +113,7 @@ export default async function panelRoutes(app) {
 
   app.post('/api/accounts', async (req, reply) => {
     if (checkAuth(req, reply) === false) return;
-    const { id, label, startUrl, proxyUrl } = req.body || {};
+    const { id, label, startUrl, proxyUrl, returnUrl } = req.body || {};
     if (!id || !label || !startUrl)
       return reply.code(400).send({ error: 'id, label and startUrl are required' });
     if (!/^[a-z0-9_-]+$/.test(id))
@@ -138,7 +138,7 @@ export default async function panelRoutes(app) {
       const isGoogle = /(^|\.)google\.com$/.test(new URL(startUrl).hostname);
       if (isGoogle) proxyFields = { useProxy: false };
     }
-    await saveAccount({ id, label, startUrl, ...proxyFields });
+    await saveAccount({ id, label, startUrl, ...(returnUrl ? { returnUrl } : {}), ...proxyFields });
     await browser.start(id, req.ip).catch(() => {});
     const saved = await getAccount(id);
     const ref = saved?.ref || '';

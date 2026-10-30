@@ -31,6 +31,7 @@ class SocialPanelViewer {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.t === 'frame') this._drawFrame(msg.data);
+      if (msg.t === 'redirect' && msg.url) { if (this.onredirect) this.onredirect(msg.url); }
     };
     ws.onclose = (ev) => { if (this.onclose) this.onclose(ev); };
     ws.onopen  = () => { this._attachInput(); this._sendSize(); if (this.onopen) this.onopen(); };

@@ -12,6 +12,7 @@ function fail(msg) {
 
 let _ready = false;
 viewer.onReady = () => { _ready = true; if (overlay) overlay.classList.add('hidden'); };
+viewer.onredirect = (url) => { const saved = localStorage.getItem('return_url'); window.location.href = saved || url || '/'; };
 viewer.onclose = (ev) => {
   if (!_ready) fail(`Błąd połączenia (${ev.code || 'WS closed'}).`);
 };
