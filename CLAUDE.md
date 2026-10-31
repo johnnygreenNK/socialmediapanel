@@ -6,7 +6,7 @@ Self-hosted panel do zarządzania własnymi sesjami przeglądarki (Playwright/Ch
 
 Linki `/account/login?ref=...` to linki dostępowe do konkretnej sesji — użytkownik otwiera link i widzi przeglądarkę zdalną. Brak screencastu / śledzenia ekranu — widok działa przez CDP input forwarding bez wpływu na FPS przeglądarki.
 
-**Serwer produkcyjny:** `146.19.125.128:8080`  
+**Serwer produkcyjny:** `109.248.160.249:8080`  
 **Ścieżka na serwerze:** `/opt/social-panel`  
 **Branch roboczy:** `claude/focused-fermat-dpezbh`
 

