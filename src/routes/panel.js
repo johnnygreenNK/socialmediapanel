@@ -221,14 +221,18 @@ export default async function panelRoutes(app) {
     if (checkAuth(req, reply) === false) return;
     const acc = await getAccount(req.params.id);
     if (!acc) return reply.code(404).send({ error: 'unknown_account' });
-    const ctx = browser.getContext(req.params.id);
-    if (!ctx) return reply.code(409).send({ error: 'session_not_running' });
     const cookies = req.body;
     if (!Array.isArray(cookies)) return reply.code(400).send({ error: 'expected a JSON array of cookies' });
-    await ctx.addCookies(cookies);
-    const page = browser.getPage(req.params.id);
-    if (page) await page.goto(acc.startUrl, { waitUntil: 'commit' }).catch(() => {});
-    return { ok: true, count: cookies.length };
+    // Persist so they are re-injected on every future session start.
+    await saveAccount({ ...acc, cookies });
+    // Also inject into the running session immediately if it exists.
+    const ctx = browser.getContext(req.params.id);
+    if (ctx) {
+      await ctx.addCookies(cookies);
+      const page = browser.getPage(req.params.id);
+      if (page) await page.goto(acc.startUrl, { waitUntil: 'commit' }).catch(() => {});
+    }
+    return { ok: true, count: cookies.length, persisted: true };
   });
 
   const withTimeout = (promise, ms = 5000) =>

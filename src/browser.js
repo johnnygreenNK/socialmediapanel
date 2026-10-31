@@ -166,6 +166,14 @@ async function launch(accountId, adminIp) {
     bypassCSP: false,
   });
 
+  // Seed pre-loaded cookies if the account has them (e.g. imported from another session).
+  if (Array.isArray(account.cookies) && account.cookies.length) {
+    await context.addCookies(account.cookies).catch((e) =>
+      pushLog(accountId, 'warn', `⚠️ addCookies: ${e.message}`)
+    );
+    pushLog(accountId, 'nav', `🍪 Wstrzyknięto ${account.cookies.length} cookies z konta`);
+  }
+
   // Remove the remaining webdriver trace that Playwright injects via CDP
   const lang = locale.split('-')[0];
   const languages = lang === 'en' ? [locale, lang] : [locale, lang, 'en-US', 'en'];
