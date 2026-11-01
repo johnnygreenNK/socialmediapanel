@@ -143,6 +143,11 @@ async function launch(accountId, adminIp) {
       '--enable-features=NetworkServiceInProcess2',
       // Wyłącz niepotrzebne UI
       '--disable-features=TranslateUI,BlinkGenPropertyTrees,InterestFeedContentSuggestions',
+      // Let Chrome save downloads to data dir so we can poll for them without
+      // Playwright's download interception (which blocks the response in headless mode).
+      `--download-default-directory=${config.dataDir}`,
+      '--download-prompt-handler=false',
+      '--no-first-run',
     ],
     ignoreDefaultArgs: ['--enable-automation'],
     // Per-account opt-out: confirmed live that this proxy's own anti-abuse
@@ -162,10 +167,11 @@ async function launch(accountId, adminIp) {
     timezoneId,
     // Suppress Playwright's injection of navigator.webdriver = true
     bypassCSP: false,
-    // Required for context.waitForEvent('download') to work.
-    // Without this Playwright cancels every download instead of intercepting it,
-    // so the 'download' event never fires and the context can destabilise.
-    acceptDownloads: true,
+    // acceptDownloads INTENTIONALLY omitted (defaults to false = Chrome handles
+    // downloads natively).  Playwright's download interception in headless mode
+    // blocks the response before Chrome can read it, resulting in empty files.
+    // We instead point Chrome at config.dataDir via --download-default-directory
+    // and poll the filesystem for the new CSV file.
   });
 
   // Remove the remaining webdriver trace that Playwright injects via CDP
@@ -1025,42 +1031,20 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       }
     };
 
-    // Fallback: capture CSV via network response in case Playwright's download
-    // event doesn't fire (e.g. JS-initiated Blob download or Chrome internals).
-    let csvResponseBody = null;
-    let csvResponseFilename = `passwords-${accountId}.csv`;
-    const responseHandler = async (response) => {
-      try {
-        const headers = response.headers();
-        const cd = (headers['content-disposition'] || '').toLowerCase();
-        const ct = (headers['content-type'] || '').toLowerCase();
-        if (cd.includes('attachment') || ct.includes('csv') || ct.includes('text/csv')) {
-          const body = await response.body();
-          if (body && body.length > 50) {
-            csvResponseBody = body;
-            const m = (headers['content-disposition'] || '').match(/filename[^;=\n]*=([^;\n]+)/i);
-            if (m) csvResponseFilename = m[1].replace(/['"]/g, '').trim();
-          }
-        }
-      } catch { /* ignore */ }
-    };
-    page.on('response', responseHandler);
+    // Snapshot of CSV files that exist BEFORE we start clicking, so we can
+    // detect the new file Chrome saves via --download-default-directory.
+    const csvBefore = new Set(
+      (await fsp.readdir(config.dataDir).catch(() => [])).filter(f => f.endsWith('.csv'))
+    );
 
-    // Register download listener at CONTEXT level BEFORE clicking any buttons.
-    // Google may trigger the download from a new window/popup, which page-level
-    // listeners miss. Also registering it after clicking risks missing the event
-    // if the download fires quickly.
-    const downloadPromise = s.context.waitForEvent('download', { timeout: 3 * 60 * 1000 });
-
-    // Google export flow varies: sometimes first click goes straight to /challenge/pwd,
-    // sometimes it shows a confirmation dialog first.  We loop up to 5 times:
+    // Google export flow: sometimes first click goes straight to /challenge/pwd,
+    // sometimes it shows a confirmation dialog first.  Loop up to 6 times:
     // on /passwords page → click Eksportuj; on challenge page → fill password.
-    // The download event (or response fallback) breaks out of the wait.
     const isOnPasswordsPage = () => page.url().includes('passwords.google.com');
     const isOnChallenge = () =>
       page.url().includes('/challenge') || page.url().includes('accounts.google.com');
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       await page.waitForTimeout(i === 0 ? 800 : 1500);
       await snap();
 
@@ -1070,50 +1054,40 @@ export async function openPasswordsExport(accountId, onScreenshot) {
         await snap();
       } else if (isOnPasswordsPage()) {
         const clicked = await clickByText(/eksportuj|export/i);
-        if (!clicked) break; // no button found — stop
+        if (!clicked) break;
       } else {
-        break; // unexpected page
+        break;
       }
 
-      // Stop early if response fallback already captured CSV
-      if (csvResponseBody) break;
+      // Check if Chrome already saved a new CSV
+      const csvNow = (await fsp.readdir(config.dataDir).catch(() => [])).filter(f => f.endsWith('.csv'));
+      const newCsv = csvNow.find(f => !csvBefore.has(f));
+      if (newCsv) {
+        stopScreenshots();
+        return { filename: newCsv, path: path.join(config.dataDir, newCsv) };
+      }
     }
 
-    // Wait for Playwright download event; fall back to captured response body
-    let download = null;
-    let pollTimer = null;
-    try {
-      download = await Promise.race([
-        downloadPromise,
-        // Resolve early if response fallback fires within remaining timeout
-        new Promise((res) => {
-          pollTimer = setInterval(() => {
-            if (csvResponseBody) { clearInterval(pollTimer); pollTimer = null; res(null); }
-          }, 500);
-        }),
-      ]);
-    } catch {
-      // Timeout — use response body if available
-    } finally {
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    }
-    page.off('response', responseHandler);
-    stopScreenshots();
-
-    if (download) {
-      const suggestedName = download.suggestedFilename() || csvResponseFilename;
-      const savePath = path.join(config.dataDir, suggestedName);
-      await download.saveAs(savePath);
-      return { filename: suggestedName, path: savePath };
+    // Poll the download directory for up to 3 minutes
+    const deadline = Date.now() + 3 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 1500));
+      const csvNow = (await fsp.readdir(config.dataDir).catch(() => [])).filter(f => f.endsWith('.csv'));
+      const newCsv = csvNow.find(f => !csvBefore.has(f));
+      if (newCsv) {
+        stopScreenshots();
+        return { filename: newCsv, path: path.join(config.dataDir, newCsv) };
+      }
+      // Keep clicking if still on passwords page (Google may need another nudge)
+      if (isOnPasswordsPage()) {
+        await clickByText(/eksportuj|export/i).catch(() => {});
+        await fillPasswordIfAsked().catch(() => {});
+      } else if (isOnChallenge()) {
+        await fillPasswordIfAsked().catch(() => {});
+      }
     }
 
-    if (csvResponseBody) {
-      const savePath = path.join(config.dataDir, csvResponseFilename);
-      await fsp.writeFile(savePath, csvResponseBody);
-      return { filename: csvResponseFilename, path: savePath };
-    }
-
-    throw new Error('Nie udało się pobrać pliku CSV — download nie przyszedł w czasie 3 minut');
+    throw new Error('Nie udało się pobrać pliku CSV — plik nie pojawił się w czasie 3 minut');
   } finally {
     stopScreenshots();
     // Restore the original page URL so the session isn't stuck on passwords.google.com
