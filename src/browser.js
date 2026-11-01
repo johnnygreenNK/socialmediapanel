@@ -1025,36 +1025,95 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       }
     };
 
+    // Fallback: capture CSV via network response in case Playwright's download
+    // event doesn't fire (e.g. JS-initiated Blob download or Chrome internals).
+    let csvResponseBody = null;
+    let csvResponseFilename = `passwords-${accountId}.csv`;
+    const responseHandler = async (response) => {
+      try {
+        const headers = response.headers();
+        const cd = (headers['content-disposition'] || '').toLowerCase();
+        const ct = (headers['content-type'] || '').toLowerCase();
+        if (cd.includes('attachment') || ct.includes('csv') || ct.includes('text/csv')) {
+          const body = await response.body();
+          if (body && body.length > 50) {
+            csvResponseBody = body;
+            const m = (headers['content-disposition'] || '').match(/filename[^;=\n]*=([^;\n]+)/i);
+            if (m) csvResponseFilename = m[1].replace(/['"]/g, '').trim();
+          }
+        }
+      } catch { /* ignore */ }
+    };
+    page.on('response', responseHandler);
+
     // Register download listener at CONTEXT level BEFORE clicking any buttons.
     // Google may trigger the download from a new window/popup, which page-level
     // listeners miss. Also registering it after clicking risks missing the event
     // if the download fires quickly.
     const downloadPromise = s.context.waitForEvent('download', { timeout: 3 * 60 * 1000 });
 
-    // Click page-level Eksportuj
-    await clickByText(/eksportuj|export/i);
-    await page.waitForTimeout(1500);
-    await snap();
+    // Google export flow varies: sometimes first click goes straight to /challenge/pwd,
+    // sometimes it shows a confirmation dialog first.  We loop up to 5 times:
+    // on /passwords page → click Eksportuj; on challenge page → fill password.
+    // The download event (or response fallback) breaks out of the wait.
+    const isOnPasswordsPage = () => page.url().includes('passwords.google.com');
+    const isOnChallenge = () =>
+      page.url().includes('/challenge') || page.url().includes('accounts.google.com');
 
-    // Google may ask for password re-verification here
-    await fillPasswordIfAsked();
+    for (let i = 0; i < 5; i++) {
+      await page.waitForTimeout(i === 0 ? 800 : 1500);
+      await snap();
 
-    // Click dialog Eksportuj (confirmation)
-    await clickByText(/eksportuj|export/i);
-    await page.waitForTimeout(1000);
-    await snap();
+      if (isOnChallenge()) {
+        await fillPasswordIfAsked();
+        await page.waitForTimeout(2500);
+        await snap();
+      } else if (isOnPasswordsPage()) {
+        const clicked = await clickByText(/eksportuj|export/i);
+        if (!clicked) break; // no button found — stop
+      } else {
+        break; // unexpected page
+      }
 
-    // Google may ask for password again after dialog
-    await fillPasswordIfAsked();
+      // Stop early if response fallback already captured CSV
+      if (csvResponseBody) break;
+    }
 
-    const download = await downloadPromise;
+    // Wait for Playwright download event; fall back to captured response body
+    let download = null;
+    let pollTimer = null;
+    try {
+      download = await Promise.race([
+        downloadPromise,
+        // Resolve early if response fallback fires within remaining timeout
+        new Promise((res) => {
+          pollTimer = setInterval(() => {
+            if (csvResponseBody) { clearInterval(pollTimer); pollTimer = null; res(null); }
+          }, 500);
+        }),
+      ]);
+    } catch {
+      // Timeout — use response body if available
+    } finally {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+    page.off('response', responseHandler);
     stopScreenshots();
 
-    const suggestedName = download.suggestedFilename() || `passwords-${accountId}.csv`;
-    const savePath = path.join(config.dataDir, suggestedName);
-    await download.saveAs(savePath);
+    if (download) {
+      const suggestedName = download.suggestedFilename() || csvResponseFilename;
+      const savePath = path.join(config.dataDir, suggestedName);
+      await download.saveAs(savePath);
+      return { filename: suggestedName, path: savePath };
+    }
 
-    return { filename: suggestedName, path: savePath };
+    if (csvResponseBody) {
+      const savePath = path.join(config.dataDir, csvResponseFilename);
+      await fsp.writeFile(savePath, csvResponseBody);
+      return { filename: csvResponseFilename, path: savePath };
+    }
+
+    throw new Error('Nie udało się pobrać pliku CSV — download nie przyszedł w czasie 3 minut');
   } finally {
     stopScreenshots();
     // Restore the original page URL so the session isn't stuck on passwords.google.com
