@@ -881,6 +881,21 @@ export async function exportPasswordsInBackground(accountId) {
 
   const page = await s.context.newPage();
   try {
+    // myaccount.google.com is a relay hop after Google sign-in that many
+    // proxies can't tunnel. Intercept it and jump straight to the `continue`
+    // URL so the proxy never has to reach that domain.
+    await page.route('**/myaccount.google.com/**', async (route) => {
+      try {
+        const url = new URL(route.request().url());
+        const cont = url.searchParams.get('continue') || url.searchParams.get('ret');
+        if (cont) {
+          await route.fulfill({ status: 302, headers: { location: cont } });
+        } else {
+          await route.continue();
+        }
+      } catch { await route.continue().catch(() => {}); }
+    });
+
     // Navigate to passwords.google.com export options.
     await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
