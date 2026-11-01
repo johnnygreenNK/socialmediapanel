@@ -926,10 +926,14 @@ export async function openPasswordsExport(accountId, onScreenshot) {
     await page.goto('https://passwords.google.com/options?ep=1', {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
+    }).catch(err => {
+      if (!err.message.includes('ERR_HTTP_RESPONSE_CODE_FAILURE') &&
+          !err.message.includes('net::ERR_')) throw err;
     });
 
-    if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
-      throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci.');
+    const landedUrl = page.url();
+    if (landedUrl.startsWith('chrome-error://') || landedUrl.startsWith('chrome://') || landedUrl === 'about:blank') {
+      throw new Error(`Nie można otworzyć passwords.google.com — błąd sieci. Sprawdź proxy i sesję.`);
     }
 
     await snap();
@@ -1066,12 +1070,19 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
   };
 
   try {
+    // ERR_HTTP_RESPONSE_CODE_FAILURE = Playwright throws on 4xx/5xx but the page may still load.
+    // Catch it and inspect the URL — if it's usable (auth page or passwords), continue.
     await page.goto('https://passwords.google.com/', {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
+    }).catch(err => {
+      if (!err.message.includes('ERR_HTTP_RESPONSE_CODE_FAILURE') &&
+          !err.message.includes('net::ERR_')) throw err;
+      // page may still have landed somewhere useful — check below
     });
-    if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
-      throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci.');
+    const landedUrl = page.url();
+    if (landedUrl.startsWith('chrome-error://') || landedUrl.startsWith('chrome://') || landedUrl === 'about:blank') {
+      throw new Error(`Nie można otworzyć passwords.google.com — błąd sieci (${landedUrl}). Sprawdź proxy i sesję.`);
     }
     await snap();
     startScreenshots();
