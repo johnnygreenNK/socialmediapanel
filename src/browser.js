@@ -1254,14 +1254,15 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
 
     for (let i = 0; i < total; i++) {
       try {
-        // Click the ith link inside the SPA — no full HTTP navigation, so no re-auth.
-        // After each goBack() the list page is restored from SPA cache.
+        // Grab href before clicking so we can re-navigate after a challenge
         const link = page.locator('a[href^="password/"]').nth(i);
         await link.scrollIntoViewIfNeeded().catch(() => {});
+        const entryHref = await link.getAttribute('href').catch(() => null);
+        const entryUrl = entryHref ? `https://passwords.google.com/${entryHref}` : null;
         await link.click({ timeout: 8000 });
         await page.waitForTimeout(1500);
 
-        // Guard: if Google redirected to auth during loop entry, handle robustly
+        // Guard: if Google redirected to auth/challenge, handle robustly
         if (isAuthPage(page.url())) {
           // 1st attempt: fill password automatically
           if (acc?.password) {
@@ -1291,15 +1292,20 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             if (isAuthPage(page.url())) {
               results.push(`wpis-${i + 1} | (pominięty — auth timeout)`);
               if (onProgress) onProgress(results.length, total);
-              // Re-navigate to list before continuing
               await gotoTolerant('https://passwords.google.com/');
               await page.waitForTimeout(1500);
               continue;
             }
           }
+          // After challenge Google redirects to list, NOT to the entry detail.
+          // Navigate directly to the entry URL we saved before clicking.
+          if (entryUrl && !page.url().includes('/password/')) {
+            await gotoTolerant(entryUrl);
+            await page.waitForTimeout(1500);
+          }
         }
 
-        // Wait a bit more for shadow DOM to populate (Google SPA can be slow)
+        // Wait for shadow DOM to fully populate
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
         const detailUrl = page.url();
         const data = await extractFromDetailPage();
