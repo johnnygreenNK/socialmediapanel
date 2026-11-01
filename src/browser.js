@@ -963,38 +963,45 @@ export async function exportPasswordsInBackground(accountId) {
 
 async function _googleSignInForExport(page, acc) {
   if (!acc.email || !acc.password) throw new Error('Brak danych logowania dla konta (email/password)');
-  await page.goto(
-    `https://accounts.google.com/v3/signin/identifier?continue=${encodeURIComponent('https://passwords.google.com/options?ep=1')}&flowName=GlifWebSignIn`,
-    { waitUntil: 'domcontentloaded', timeout: 30000 }
-  );
-  await page.waitForTimeout(2000);
 
-  // Account picker
-  const picker = await page.$('[data-email], [data-identifier], [aria-label*="@"]').catch(() => null);
-  if (picker) { await picker.click(); await page.waitForTimeout(2000); }
+  // Helper: is element visible on page?
+  const isVisible = (el) => page.evaluate(
+    e => !!(e && e.offsetParent !== null && !e.disabled),
+    el
+  ).catch(() => false);
 
-  // Email field
-  const emailInp = await page.$('input[type="email"]').catch(() => null);
-  if (emailInp) {
-    await emailInp.click();
-    await page.keyboard.type(acc.email, { delay: 40 });
-    await page.keyboard.press('Enter');
+  // Step 1: account picker — click the account matching our email (if shown)
+  const picker = await page.$(`[data-email="${acc.email}"], [data-identifier="${acc.email}"]`).catch(() => null)
+              || await page.$('[data-email], [data-identifier]').catch(() => null);
+  if (picker && await isVisible(picker)) {
+    await picker.click();
     await page.waitForTimeout(2500);
   }
 
-  // Password field — Google uses name="Passwd" with tabindex="0"
-  await page.waitForFunction(() => {
+  // Step 2: email field (shown when no account is remembered)
+  const emailInp = await page.$('#identifierId, input[type="email"]').catch(() => null);
+  if (emailInp && await isVisible(emailInp)) {
+    await emailInp.click();
+    await emailInp.fill(acc.email);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(3000);
+  }
+
+  // Step 3: password field — wait up to 10s for it to appear then fill
+  const pwVisible = await page.waitForFunction(() => {
     const inp = document.querySelector('input[name="Passwd"]') || document.querySelector('input[type="password"]');
     return inp && inp.offsetParent !== null;
-  }, { timeout: 15000 }).catch(() => {});
+  }, { timeout: 10000 }).catch(() => null);
 
-  const pwInp = await page.$('input[name="Passwd"]').catch(() => null)
-             || await page.$('input[type="password"][tabindex="0"]').catch(() => null)
-             || await page.$('input[type="password"]').catch(() => null);
-  if (pwInp) {
-    await pwInp.click({ force: true }).catch(() => {});
-    await page.keyboard.type(acc.password, { delay: 40 });
-    await page.keyboard.press('Enter');
+  if (pwVisible) {
+    const pwInp = await page.$('input[name="Passwd"]').catch(() => null)
+               || await page.$('input[type="password"]').catch(() => null);
+    if (pwInp) {
+      await pwInp.click({ force: true }).catch(() => {});
+      await pwInp.fill(acc.password);
+      await page.keyboard.press('Enter');
+    }
   }
+  // Give Google time to process auth and redirect
   await page.waitForTimeout(4000);
 }
