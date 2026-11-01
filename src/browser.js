@@ -1131,42 +1131,15 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     const total = Math.min(hrefs.length, 300);
     const results = [];
 
-    // Helper: extract password data from detail page walking shadow DOM
+    // Extract all inputs from detail page (including shadow DOM), click show first
     async function extractFromDetailPage() {
-      return page.evaluate(() => {
-        const r = { site: '', user: '', pw: '' };
-        function walk(root) {
-          if (!root) return;
-          for (const inp of (root.querySelectorAll ? root.querySelectorAll('input') : [])) {
-            const type = (inp.type || '').toLowerCase();
-            const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
-            const name = (inp.name || inp.id || inp.placeholder || '').toLowerCase();
-            if (!inp.value) continue;
-            if (type === 'url' || aria.includes('website') || aria.includes('site') || aria.includes('url') || name.includes('url') || name.includes('website')) {
-              r.site = r.site || inp.value;
-            } else if (aria.includes('username') || aria.includes('user') || aria.includes('email') || aria.includes('login') || name.includes('user') || name.includes('email') || name.includes('login') || type === 'email') {
-              r.user = r.user || inp.value;
-            } else if (type === 'password' || aria.includes('password') || aria.includes('hasło') || name.includes('pass')) {
-              r.pw = r.pw || inp.value;
-            }
-          }
-          for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : [])) {
-            if (el.shadowRoot) walk(el.shadowRoot);
-          }
-        }
-        walk(document.body);
-        return r;
-      });
-    }
-
-    // Helper: click show-password button walking shadow DOM
-    async function clickShowPassword() {
+      // Click show-password button before reading (Google only populates value after show)
       await page.evaluate(() => {
         function find(root) {
           if (!root) return false;
-          for (const b of (root.querySelectorAll ? root.querySelectorAll('button') : [])) {
+          for (const b of (root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : [])) {
             const lbl = (b.getAttribute('aria-label') || b.title || b.textContent || '').toLowerCase();
-            if (lbl.includes('show') || lbl.includes('pokaż') || lbl.includes('visibility') || lbl.includes('reveal') || lbl.includes('wyświetl')) {
+            if (lbl.includes('show') || lbl.includes('pokaż') || lbl.includes('wyświetl') || lbl.includes('visibility') || lbl.includes('reveal')) {
               b.click(); return true;
             }
           }
@@ -1177,6 +1150,54 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         }
         find(document.body);
       }).catch(() => {});
+      await page.waitForTimeout(800);
+
+      return page.evaluate(() => {
+        const r = { site: '', user: '', pw: '' };
+        const all = [];
+        function walk(root) {
+          if (!root) return;
+          for (const inp of (root.querySelectorAll ? root.querySelectorAll('input') : [])) {
+            const v = inp.value;
+            if (!v) continue;
+            all.push({
+              type: (inp.type || '').toLowerCase(),
+              value: v,
+              aria: (inp.getAttribute('aria-label') || '').toLowerCase(),
+              name: (inp.name || inp.id || inp.placeholder || '').toLowerCase(),
+            });
+          }
+          for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : [])) {
+            if (el.shadowRoot) walk(el.shadowRoot);
+          }
+        }
+        walk(document.body);
+
+        for (const inp of all) {
+          // Site/URL field
+          if (!r.site && (inp.type === 'url' || inp.aria.includes('url') || inp.aria.includes('witryn') || inp.aria.includes('adres') || inp.aria.includes('website') || inp.aria.includes('site') || inp.name.includes('url') || inp.name.includes('website'))) {
+            r.site = inp.value; continue;
+          }
+          // Password field (type=password before show, or type=text after show with matching label)
+          if (!r.pw && (inp.type === 'password' || inp.aria.includes('hasło') || inp.aria.includes('password') || inp.name.includes('pass'))) {
+            r.pw = inp.value; continue;
+          }
+          // Username — Polish: "nazwa użytkownika", English: "username", also email/login
+          if (!r.user && (inp.type === 'email' || inp.aria.includes('użytkowni') || inp.aria.includes('username') || inp.aria.includes('user') || inp.aria.includes('email') || inp.aria.includes('login') || inp.name.includes('user') || inp.name.includes('email') || inp.name.includes('login'))) {
+            r.user = inp.value; continue;
+          }
+        }
+
+        // Positional fallback: assign remaining non-empty inputs in order
+        const used = new Set([r.site, r.user, r.pw].filter(Boolean));
+        const rest = all.filter(i => !used.has(i.value));
+        for (const inp of rest) {
+          if (!r.user) { r.user = inp.value; continue; }
+          if (!r.pw) { r.pw = inp.value; break; }
+        }
+
+        return r;
+      });
     }
 
     for (let i = 0; i < total; i++) {
@@ -1193,14 +1214,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
           await page.waitForTimeout(2000);
         }
 
-        let data = await extractFromDetailPage();
-
-        // If password empty, click show then re-extract
-        if (!data.pw) {
-          await clickShowPassword();
-          await page.waitForTimeout(500);
-          data = await extractFromDetailPage();
-        }
+        const data = await extractFromDetailPage();
 
         const site = data.site || `wpis-${i + 1}`;
         const user = data.user || '';
