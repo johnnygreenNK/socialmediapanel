@@ -1298,9 +1298,11 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             }
           }
           // After challenge Google redirects to list, NOT to the entry detail.
-          // Navigate directly to the entry URL we saved before clicking.
-          if (entryUrl && !page.url().includes('/password/')) {
-            await gotoTolerant(entryUrl);
+          // Re-click via SPA (NOT page.goto — that would trigger another challenge).
+          if (!page.url().includes('/password/')) {
+            const reLink = page.locator('a[href^="password/"]').nth(i);
+            await reLink.scrollIntoViewIfNeeded().catch(() => {});
+            await reLink.click({ timeout: 8000 }).catch(() => {});
             await page.waitForTimeout(1500);
           }
         }
