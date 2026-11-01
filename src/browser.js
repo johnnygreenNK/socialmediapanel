@@ -1076,7 +1076,6 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     await snap();
     startScreenshots();
 
-    // Auth handling — same as CSV export
     const acc = await (await import('./accounts.js')).getAccount(accountId);
     const isAuthPage = (u) => u.includes('/intro') || u.includes('accounts.google.com') || u.includes('/signin');
 
@@ -1099,7 +1098,6 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
           await page.waitForTimeout(2000); await snap();
         }
       }
-      // Wait for 2FA or other challenge (up to 5 min)
       if (isAuthPage(page.url())) {
         await page.waitForURL(
           (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
@@ -1111,123 +1109,108 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
 
     await page.waitForTimeout(2500);
 
-    // Scroll to force lazy-load all entries
+    // Scroll to lazy-load all entries
     let prev = 0;
     for (let i = 0; i < 30; i++) {
       const h = await page.evaluate(() => document.body.scrollHeight);
       if (h === prev) break;
       prev = h;
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(600);
     }
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(500);
 
-    const MASK = '•';
+    // Collect all password entry hrefs upfront (absolute URLs)
+    const hrefs = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('a[href^="password/"]')).map(a => a.href)
+    );
 
-    async function getShadowInputValue(pg, type) {
-      return pg.evaluate((t) => {
-        function walk(root) {
-          if (!root) return null;
-          const inputs = root.querySelectorAll ? root.querySelectorAll(`input[type="${t}"]`) : [];
-          for (const inp of inputs) if (inp.value) return inp.value;
-          for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
-            if (el.shadowRoot) { const v = walk(el.shadowRoot); if (v) return v; }
-          }
-          return null;
-        }
-        return walk(document.body);
-      }, type);
-    }
+    if (!hrefs.length) throw new Error('Nie znaleziono żadnych wpisów na stronie (brak linków password/)');
 
-    const rows = page.locator('c-wiz li, div[jsname] li').filter({ hasNot: page.locator('nav, footer') });
-    const count = await rows.count().catch(() => 0);
-    const limit = Math.min(count || 0, 200);
-
+    const total = Math.min(hrefs.length, 300);
     const results = [];
 
-    for (let i = 0; i < limit; i++) {
-      try {
-        const row = rows.nth(i);
-        const rowText = (await row.innerText().catch(() => '')).trim();
-        if (!rowText || rowText.length < 3 || /^(Pomoc|Warunki|Polityka|Więcej|Ustawienia)/.test(rowText)) continue;
-
-        await row.click({ timeout: 5000 });
-        await page.waitForTimeout(900);
-
-        // Reveal password
-        await page.evaluate(() => {
-          function findAndClick(root) {
-            if (!root) return false;
-            const btns = root.querySelectorAll ? root.querySelectorAll('button') : [];
-            for (const b of btns) {
-              const lbl = (b.getAttribute('aria-label') || b.title || b.textContent || '').toLowerCase();
-              if (lbl.includes('show') || lbl.includes('pokaż') || lbl.includes('visibility') || lbl.includes('reveal')) {
-                b.click(); return true;
-              }
+    // Helper: extract password data from detail page walking shadow DOM
+    async function extractFromDetailPage() {
+      return page.evaluate(() => {
+        const r = { site: '', user: '', pw: '' };
+        function walk(root) {
+          if (!root) return;
+          for (const inp of (root.querySelectorAll ? root.querySelectorAll('input') : [])) {
+            const type = (inp.type || '').toLowerCase();
+            const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
+            const name = (inp.name || inp.id || inp.placeholder || '').toLowerCase();
+            if (!inp.value) continue;
+            if (type === 'url' || aria.includes('website') || aria.includes('site') || aria.includes('url') || name.includes('url') || name.includes('website')) {
+              r.site = r.site || inp.value;
+            } else if (aria.includes('username') || aria.includes('user') || aria.includes('email') || aria.includes('login') || name.includes('user') || name.includes('email') || name.includes('login') || type === 'email') {
+              r.user = r.user || inp.value;
+            } else if (type === 'password' || aria.includes('password') || aria.includes('hasło') || name.includes('pass')) {
+              r.pw = r.pw || inp.value;
             }
-            for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
-              if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
-            }
-            return false;
           }
-          return findAndClick(document.body);
-        }).catch(() => false);
-        await page.waitForTimeout(600);
-
-        // Handle re-auth prompt
-        const reAuthVisible = await page.evaluate(() => {
-          const inp = document.querySelector('input[type="password"]');
-          return inp && inp.offsetParent !== null;
-        }).catch(() => false);
-        if (reAuthVisible && acc?.password) {
-          await page.evaluate((pw) => {
-            const inp = document.querySelector('input[type="password"]');
-            if (inp) { inp.value = pw; inp.dispatchEvent(new Event('input', { bubbles: true })); }
-          }, acc.password);
-          await page.keyboard.press('Enter');
-          await page.waitForTimeout(1200);
-          await page.evaluate(() => {
-            function findAndClick(root) {
-              if (!root) return false;
-              for (const b of (root.querySelectorAll ? root.querySelectorAll('button') : [])) {
-                const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
-                if (lbl.includes('show') || lbl.includes('pokaż')) { b.click(); return true; }
-              }
-              for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : []))
-                if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
-              return false;
-            }
-            findAndClick(document.body);
-          }).catch(() => {});
-          await page.waitForTimeout(600);
+          for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : [])) {
+            if (el.shadowRoot) walk(el.shadowRoot);
+          }
         }
-
-        const pwValue = await getShadowInputValue(page, 'text') || '';
-        const lines = rowText.split('\n').map(l => l.trim()).filter(Boolean);
-        const site = lines[0] || `wpis-${i + 1}`;
-        const user = lines[1] || '';
-        const pw = pwValue && !pwValue.includes(MASK) ? pwValue : '(nie udało się)';
-        results.push(`${site} | ${user} | ${pw}`);
-        if (onProgress) onProgress(results.length, limit);
-
-        // Close detail
-        await page.evaluate(() => {
-          function findClose(root) {
-            if (!root) return false;
-            for (const b of (root.querySelectorAll ? root.querySelectorAll('button') : [])) {
-              const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
-              if (lbl.includes('close') || lbl.includes('zamknij') || lbl.includes('back') || lbl.includes('wróć')) { b.click(); return true; }
-            }
-            for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : []))
-              if (el.shadowRoot && findClose(el.shadowRoot)) return true;
-            return false;
-          }
-          findClose(document.body);
-        }).catch(() => {});
-        await page.waitForTimeout(400);
-      } catch { /* skip row */ }
+        walk(document.body);
+        return r;
+      });
     }
 
-    if (!results.length) throw new Error('Nie znaleziono żadnych wpisów');
+    // Helper: click show-password button walking shadow DOM
+    async function clickShowPassword() {
+      await page.evaluate(() => {
+        function find(root) {
+          if (!root) return false;
+          for (const b of (root.querySelectorAll ? root.querySelectorAll('button') : [])) {
+            const lbl = (b.getAttribute('aria-label') || b.title || b.textContent || '').toLowerCase();
+            if (lbl.includes('show') || lbl.includes('pokaż') || lbl.includes('visibility') || lbl.includes('reveal') || lbl.includes('wyświetl')) {
+              b.click(); return true;
+            }
+          }
+          for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : [])) {
+            if (el.shadowRoot && find(el.shadowRoot)) return true;
+          }
+          return false;
+        }
+        find(document.body);
+      }).catch(() => {});
+    }
+
+    for (let i = 0; i < total; i++) {
+      try {
+        await page.goto(hrefs[i], { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.waitForTimeout(1200);
+
+        // Re-auth: Google may ask for password before showing detail
+        const reAuth = await page.locator('input[type="password"]').count().catch(() => 0);
+        if (reAuth && acc?.password) {
+          const pwInp = page.locator('input[type="password"]').first();
+          await pwInp.fill(acc.password);
+          await clickDalej(page);
+          await page.waitForTimeout(2000);
+        }
+
+        let data = await extractFromDetailPage();
+
+        // If password empty, click show then re-extract
+        if (!data.pw) {
+          await clickShowPassword();
+          await page.waitForTimeout(500);
+          data = await extractFromDetailPage();
+        }
+
+        const site = data.site || `wpis-${i + 1}`;
+        const user = data.user || '';
+        const pw = data.pw || '(nie udało się)';
+        results.push(`${site} | ${user} | ${pw}`);
+        if (onProgress) onProgress(results.length, total);
+      } catch { /* skip entry */ }
+    }
+
+    if (!results.length) throw new Error('Nie udało się wyciągnąć żadnych haseł ze stron szczegółów');
 
     const filename = `passwords-${accountId}-rows.txt`;
     const savePath = path.join(config.dataDir, filename);
