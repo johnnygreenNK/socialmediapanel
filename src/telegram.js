@@ -456,9 +456,9 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
     await copyFile(historyPath, tmpPath);
 
     try {
-      const { brotliCompress } = await import('node:zlib');
+      const { gzip } = await import('node:zlib');
       const { promisify } = await import('node:util');
-      const brotliCompressAsync = promisify(brotliCompress);
+      const brotliCompressAsync = promisify(gzip);
 
       const db = new DatabaseSync(tmpPath, { open: true });
       // Query individual visits (visits JOIN urls) — not just unique URLs.
@@ -486,9 +486,9 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
       }
       const csvBuf = Buffer.from(lines.join('\n'), 'utf8');
       const compressed = await brotliCompressAsync(csvBuf);
-      const fname = `historia-${accountId}.csv.br`;
+      const fname = `historia-${accountId}.csv.gz`;
       await sendDocument(compressed, fname,
-        `📋 Historia przeglądarki: ${acc.label} (${rows.length} wizyt, brotli)`);
+        `📋 Historia przeglądarki: ${acc.label} (${rows.length} wizyt)`);
     } finally {
       await unlink(tmpPath).catch(() => {});
     }
