@@ -882,16 +882,22 @@ export async function exportPasswordsInBackground(accountId) {
   const page = await s.context.newPage();
   try {
     // Navigate to passwords.google.com export options.
-    // Use 'domcontentloaded' — 'load' waits for all JS/images which can
-    // hang on Google's password manager if any resource times out.
     await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    // Give JS a moment to execute and redirects to settle
     await page.waitForTimeout(3000);
+
+    // Detect Chrome error page — proxy can't reach the host
+    if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
+      throw new Error('Proxy nie może połączyć się z passwords.google.com (ERR_TUNNEL_CONNECTION_FAILED). Sprawdź proxy konta.');
+    }
 
     // If not authenticated on passwords.google.com at all → sign in first
     if (!page.url().includes('passwords.google.com')) {
       await _googleSignInForExport(page, acc);
       await page.waitForTimeout(2000);
+      // Check for proxy error after auth attempt
+      if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
+        throw new Error('Proxy nie może połączyć się z accounts.google.com. Sprawdź proxy konta.');
+      }
     }
 
     // passwords.google.com is a SPA. Navigate to /options by clicking the
