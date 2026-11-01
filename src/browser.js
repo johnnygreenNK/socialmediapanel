@@ -987,8 +987,15 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       const pwInput = page.locator('input[type="password"]').first();
       if (await pwInput.count() && acc2?.password) {
         await pwInput.fill(acc2.password);
-        await page.keyboard.press('Enter');
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(300);
+        // Click Dalej/Next button explicitly
+        const dalej = page.locator('button').filter({ hasText: /dalej|next/i }).first();
+        if (await dalej.count()) {
+          await dalej.click();
+        } else {
+          await page.keyboard.press('Enter');
+        }
+        await page.waitForTimeout(2500);
         await snap();
       }
     };
