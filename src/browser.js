@@ -975,20 +975,39 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       await snap();
     }
 
-    // Click Export button, then confirm the dialog
-    const clickByText = async (pg, pattern) => {
-      const el = pg.locator('button, [role="button"], a').filter({ hasText: pattern }).last();
+    const acc2 = await (await import('./accounts.js')).getAccount(accountId);
+
+    const clickByText = async (pattern) => {
+      const el = page.locator('button, [role="button"], a').filter({ hasText: pattern }).last();
       if (await el.count()) { await el.click(); return true; }
       return false;
     };
-    // First click on the page-level Eksportuj button
-    await clickByText(page, /eksportuj|export/i);
-    await page.waitForTimeout(1200);
+
+    const fillPasswordIfAsked = async () => {
+      const pwInput = page.locator('input[type="password"]').first();
+      if (await pwInput.count() && acc2?.password) {
+        await pwInput.fill(acc2.password);
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(2000);
+        await snap();
+      }
+    };
+
+    // Click page-level Eksportuj
+    await clickByText(/eksportuj|export/i);
+    await page.waitForTimeout(1500);
     await snap();
-    // Click confirm button in the dialog (also says Eksportuj)
-    await clickByText(page, /eksportuj|export/i);
-    await page.waitForTimeout(500);
+
+    // Google may ask for password re-verification here
+    await fillPasswordIfAsked();
+
+    // Click dialog Eksportuj (confirmation)
+    await clickByText(/eksportuj|export/i);
+    await page.waitForTimeout(1000);
     await snap();
+
+    // Google may ask for password again after dialog
+    await fillPasswordIfAsked();
 
     const download = await page.waitForEvent('download', { timeout: 3 * 60 * 1000 });
     stopScreenshots();
