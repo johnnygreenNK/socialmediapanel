@@ -1252,7 +1252,12 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
       });
     }
 
-    const dbg = (msg) => telegram.sendMessage(`🐛 [${accountId}] ${msg}`).catch(() => {});
+    const dbgLog = path.join(config.dataDir, `debug-gpw-${accountId}.log`);
+    const dbg = async (msg) => {
+      const line = `[${new Date().toISOString()}] ${msg}\n`;
+      await fsp.appendFile(dbgLog, line).catch(() => {});
+    };
+    await fsp.writeFile(dbgLog, `=== START ${new Date().toISOString()} ===\n`).catch(() => {});
 
     for (let i = 0; i < total; i++) {
       try {
