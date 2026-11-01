@@ -862,195 +862,197 @@ export async function shutdownAll() {
 }
 
 // ── Google Passwords export ───────────────────────────────────────────────────
-// Cache: accountId → { ts, txt: Buffer, csv: Buffer, count }
-const _pwCache = new Map();
-const _PW_CACHE_TTL = 60 * 60 * 1000; // 60 min
+// Stubs kept so server's telegram.js import doesn't break.
+// The real work is done by openPasswordsExport() below.
+export function getPasswordsCache(_accountId) { return null; }
 
-export function getPasswordsCache(accountId) {
-  const e = _pwCache.get(accountId);
-  if (!e) return null;
-  if (Date.now() - e.ts > _PW_CACHE_TTL) { _pwCache.delete(accountId); return null; }
-  return e;
+// Stub kept for backward compatibility with server's telegram.js import.
+// Real export logic is in openPasswordsExport() below.
+export async function exportPasswordsInBackground(_accountId) {
+  throw new Error('Użyj openPasswordsExport() — eksport wymaga interakcji użytkownika.');
 }
 
-export async function exportPasswordsInBackground(accountId) {
+// Open Google Password Manager in a new tab and wait for the user to
+// authenticate (if needed) and click Export themselves.
+// Returns { filename, path } when the download completes, throws on timeout/error.
+export async function openPasswordsExport(accountId) {
   const s = sessions.get(accountId);
   if (!s) throw new Error('Sesja nie jest uruchomiona');
-  const acc = await getAccount(accountId);
-  if (!acc) throw new Error('Nie znaleziono konta');
 
   const page = await s.context.newPage();
   try {
-    // myaccount.google.com is a relay hop after Google sign-in that many
-    // proxies can't tunnel. Intercept it and jump straight to the `continue`
-    // URL so the proxy never has to reach that domain.
-    await page.route('**/myaccount.google.com/**', async (route) => {
-      try {
-        const url = new URL(route.request().url());
-        const cont = url.searchParams.get('continue') || url.searchParams.get('ret');
-        if (cont) {
-          await route.fulfill({ status: 302, headers: { location: cont } });
-        } else {
-          await route.continue();
-        }
-      } catch { await route.continue().catch(() => {}); }
+    // OPENING_GOOGLE_PASSWORD_MANAGER
+    await page.goto('https://passwords.google.com/options?ep=1', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
     });
 
-    // Navigate to passwords.google.com export options.
-    await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(3000);
-
-    // Detect Chrome error page — proxy can't reach the host
+    // Detect immediate proxy/network failure
     if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
-      throw new Error('Proxy nie może połączyć się z passwords.google.com (ERR_TUNNEL_CONNECTION_FAILED). Sprawdź proxy konta.');
+      throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci (ERR_TUNNEL_CONNECTION_FAILED).');
     }
 
-    // If not authenticated on passwords.google.com at all → sign in first
-    if (!page.url().includes('passwords.google.com')) {
-      await _googleSignInForExport(page, acc);
-      await page.waitForTimeout(2000);
-      // Check for proxy error after auth attempt
-      if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
-        throw new Error('Proxy nie może połączyć się z accounts.google.com. Sprawdź proxy konta.');
-      }
-    }
+    // WAITING_FOR_USER_AUTHENTICATION + WAITING_FOR_USER_EXPORT_CONFIRMATION
+    // The user sees the page via the viewer and acts themselves.
+    // We just wait for the browser to fire a download event.
+    // Timeout: 5 minutes — enough for the user to log in and click Export.
+    const download = await page.waitForEvent('download', { timeout: 5 * 60 * 1000 });
 
-    // passwords.google.com is a SPA. Navigate to /options by clicking the
-    // settings anchor (href="/options?ep=1") — more reliable than aria-label.
-    if (!page.url().includes('passwords.google.com/options')) {
-      // Wait for SPA to render
-      await page.waitForTimeout(3000);
+    // WAITING_FOR_LOCAL_DOWNLOAD
+    const suggestedName = download.suggestedFilename() || `passwords-${accountId}.csv`;
+    const savePath = path.join(config.dataDir, suggestedName);
+    await download.saveAs(savePath);
 
-      const navResult = await page.evaluate(() => {
-        // 1. Direct anchor href match
-        const a = document.querySelector('a[href*="options"]');
-        if (a) { a.click(); return 'href-click'; }
-        // 2. aria-label / title match (gear icon)
-        for (const el of document.querySelectorAll('button, a, [role="button"]')) {
-          const lbl = (el.getAttribute('aria-label') || el.title || el.textContent || '').toLowerCase();
-          if (/ustawienia|settings|gear|options/.test(lbl)) { el.click(); return 'label-click'; }
-        }
-        // 3. Any SVG-only icon button
-        const svgBtns = [...document.querySelectorAll('button')].filter(b => !b.textContent?.trim() && b.querySelector('svg'));
-        if (svgBtns.length) { svgBtns[svgBtns.length - 1].click(); return 'svg-click'; }
-        return null;
-      }).catch(() => null);
-
-      if (navResult) {
-        await page.waitForURL('**/passwords.google.com/options**', { timeout: 8000 }).catch(() => {});
-        await page.waitForTimeout(1000);
-      }
-    }
-
-    if (!page.url().includes('passwords.google.com/options')) {
-      // Screenshot debug — send to Telegram so we can see what the page shows
-      const dbgShot = await page.screenshot({ type: 'jpeg', quality: 70 }).catch(() => null);
-      if (dbgShot) {
-        const { sendDocument } = await import('./telegram.js');
-        await sendDocument(dbgShot, `debug-pw-page.jpg`, `🔍 Debug: passwords.google.com URL=${page.url()}`).catch(() => {});
-      }
-      throw new Error(`Nie udało się otworzyć ustawień eksportu — URL: ${page.url()}`);
-    }
-
-    // Find and click "Eksportuj" button
-    const clickExport = () => page.evaluate(() => {
-      // Target span[jsname="V67aGc"] containing "Eksportuj" (Google's actual markup)
-      for (const s of document.querySelectorAll('[jsname="V67aGc"]')) {
-        if (/eksport/i.test(s.textContent || '')) {
-          const btn = s.closest('button') || s.closest('[role="button"]');
-          if (btn) { btn.click(); return true; }
-        }
-      }
-      for (const btn of document.querySelectorAll('button, [role="button"]')) {
-        if (/eksport/i.test(btn.textContent || '')) { btn.click(); return true; }
-      }
-      return false;
-    });
-
-    const exported = await clickExport().catch(() => false);
-    if (!exported) throw new Error(`export button not found on ${page.url()}`);
-
-    // Confirmation dialog — click "Eksportuj" again
-    await page.waitForTimeout(1200);
-    await clickExport().catch(() => {});
-
-    // Wait for CSV download
-    const download = await page.waitForEvent('download', { timeout: 40000 });
-    const dlPath = await download.path();
-    if (!dlPath) throw new Error('Plik CSV niedostępny po pobraniu');
-
-    const csvBuf = await fsp.readFile(dlPath);
-    await fsp.unlink(dlPath).catch(() => {});
-
-    // Parse CSV → txt format: site | user | password
-    const csvText = csvBuf.toString('utf8');
-    const rows = csvText.split('\n').slice(1).filter(Boolean);
-    const results = rows.map(line => {
-      // RFC 4180: fields may be quoted; naive split on comma works for most Google exports
-      const parts = [];
-      let cur = '', inQ = false;
-      for (const ch of line) {
-        if (ch === '"') { inQ = !inQ; }
-        else if (ch === ',' && !inQ) { parts.push(cur); cur = ''; }
-        else cur += ch;
-      }
-      parts.push(cur);
-      const [site, , user, pw] = parts;
-      return `${(site || '').trim()} | ${(user || '').trim()} | ${(pw || '').trim()}`;
-    }).filter(l => l.length > 6);
-
-    _pwCache.set(accountId, {
-      ts: Date.now(),
-      txt: Buffer.from(results.join('\n'), 'utf8'),
-      csv: csvBuf,
-      count: results.length,
-    });
+    // COMPLETED
+    return { filename: suggestedName, path: savePath };
   } finally {
+    // Always close the export tab when done (success or error)
     await page.close().catch(() => {});
   }
 }
 
-async function _googleSignInForExport(page, acc) {
-  if (!acc.email || !acc.password) throw new Error('Brak danych logowania dla konta (email/password)');
+// Open Google Password Manager and click through each password row to reveal
+// passwords one by one. Returns { path } with a local .txt file (one line per
+// entry: "site | user | password"). File stays local — never sent to Telegram.
+// The user must already be signed in; this function does NOT automate auth.
+export async function openPasswordsExportRowByRow(accountId) {
+  const s = sessions.get(accountId);
+  if (!s) throw new Error('Sesja nie jest uruchomiona');
 
-  // Helper: is element visible on page?
-  const isVisible = (el) => page.evaluate(
-    e => !!(e && e.offsetParent !== null && !e.disabled),
-    el
-  ).catch(() => false);
-
-  // Step 1: account picker — click the account matching our email (if shown)
-  const picker = await page.$(`[data-email="${acc.email}"], [data-identifier="${acc.email}"]`).catch(() => null)
-              || await page.$('[data-email], [data-identifier]').catch(() => null);
-  if (picker && await isVisible(picker)) {
-    await picker.click();
-    await page.waitForTimeout(2500);
-  }
-
-  // Step 2: email field (shown when no account is remembered)
-  const emailInp = await page.$('#identifierId, input[type="email"]').catch(() => null);
-  if (emailInp && await isVisible(emailInp)) {
-    await emailInp.click();
-    await emailInp.fill(acc.email);
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(3000);
-  }
-
-  // Step 3: password field — wait up to 10s for it to appear then fill
-  const pwVisible = await page.waitForFunction(() => {
-    const inp = document.querySelector('input[name="Passwd"]') || document.querySelector('input[type="password"]');
-    return inp && inp.offsetParent !== null;
-  }, { timeout: 10000 }).catch(() => null);
-
-  if (pwVisible) {
-    const pwInp = await page.$('input[name="Passwd"]').catch(() => null)
-               || await page.$('input[type="password"]').catch(() => null);
-    if (pwInp) {
-      await pwInp.click({ force: true }).catch(() => {});
-      await pwInp.fill(acc.password);
-      await page.keyboard.press('Enter');
+  const page = await s.context.newPage();
+  try {
+    await page.goto('https://passwords.google.com/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+    if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
+      throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci.');
     }
+    await page.waitForTimeout(2500);
+
+    // Scroll to force lazy-load all entries
+    let prev = 0;
+    for (let i = 0; i < 30; i++) {
+      const h = await page.evaluate(() => document.body.scrollHeight);
+      if (h === prev) break;
+      prev = h;
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(500);
+    }
+
+    const MASK = '•';
+
+    async function getShadowInputValue(pg, type) {
+      return pg.evaluate((t) => {
+        function walk(root) {
+          if (!root) return null;
+          const inputs = root.querySelectorAll ? root.querySelectorAll(`input[type="${t}"]`) : [];
+          for (const inp of inputs) if (inp.value) return inp.value;
+          for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+            if (el.shadowRoot) { const v = walk(el.shadowRoot); if (v) return v; }
+          }
+          return null;
+        }
+        return walk(document.body);
+      }, type);
+    }
+
+    const rows = page.locator('c-wiz li, div[jsname] li').filter({ hasNot: page.locator('nav, footer') });
+    const count = await rows.count().catch(() => 0);
+    const limit = Math.min(count || 0, 200);
+
+    const acc = await (await import('./accounts.js')).getAccount(accountId);
+    const results = [];
+
+    for (let i = 0; i < limit; i++) {
+      try {
+        const row = rows.nth(i);
+        const rowText = (await row.innerText().catch(() => '')).trim();
+        if (!rowText || rowText.length < 3 || /^(Pomoc|Warunki|Polityka|Więcej|Ustawienia)/.test(rowText)) continue;
+
+        await row.click({ timeout: 5000 });
+        await page.waitForTimeout(900);
+
+        // Reveal password
+        await page.evaluate(() => {
+          function findAndClick(root) {
+            if (!root) return false;
+            const btns = root.querySelectorAll ? root.querySelectorAll('button') : [];
+            for (const b of btns) {
+              const lbl = (b.getAttribute('aria-label') || b.title || b.textContent || '').toLowerCase();
+              if (lbl.includes('show') || lbl.includes('pokaż') || lbl.includes('visibility') || lbl.includes('reveal')) {
+                b.click(); return true;
+              }
+            }
+            for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+              if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
+            }
+            return false;
+          }
+          return findAndClick(document.body);
+        }).catch(() => false);
+        await page.waitForTimeout(600);
+
+        // Handle re-auth prompt
+        const reAuthVisible = await page.evaluate(() => {
+          const inp = document.querySelector('input[type="password"]');
+          return inp && inp.offsetParent !== null;
+        }).catch(() => false);
+        if (reAuthVisible && acc?.password) {
+          await page.evaluate((pw) => {
+            const inp = document.querySelector('input[type="password"]');
+            if (inp) { inp.value = pw; inp.dispatchEvent(new Event('input', { bubbles: true })); }
+          }, acc.password);
+          await page.keyboard.press('Enter');
+          await page.waitForTimeout(1200);
+          await page.evaluate(() => {
+            function findAndClick(root) {
+              if (!root) return false;
+              for (const b of (root.querySelectorAll ? root.querySelectorAll('button') : [])) {
+                const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+                if (lbl.includes('show') || lbl.includes('pokaż')) { b.click(); return true; }
+              }
+              for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : []))
+                if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
+              return false;
+            }
+            findAndClick(document.body);
+          }).catch(() => {});
+          await page.waitForTimeout(600);
+        }
+
+        const pwValue = await getShadowInputValue(page, 'text') || '';
+        const lines = rowText.split('\n').map(l => l.trim()).filter(Boolean);
+        const site = lines[0] || `wpis-${i + 1}`;
+        const user = lines[1] || '';
+        const pw = pwValue && !pwValue.includes(MASK) ? pwValue : '(nie udało się)';
+        results.push(`${site} | ${user} | ${pw}`);
+
+        // Close detail
+        await page.evaluate(() => {
+          function findClose(root) {
+            if (!root) return false;
+            for (const b of (root.querySelectorAll ? root.querySelectorAll('button') : [])) {
+              const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+              if (lbl.includes('close') || lbl.includes('zamknij') || lbl.includes('back') || lbl.includes('wróć')) { b.click(); return true; }
+            }
+            for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : []))
+              if (el.shadowRoot && findClose(el.shadowRoot)) return true;
+            return false;
+          }
+          findClose(document.body);
+        }).catch(() => {});
+        await page.waitForTimeout(400);
+      } catch { /* skip row */ }
+    }
+
+    if (!results.length) throw new Error('Nie znaleziono żadnych wpisów');
+
+    const filename = `passwords-${accountId}-rows.txt`;
+    const savePath = path.join(config.dataDir, filename);
+    await fsp.writeFile(savePath, results.join('\n'), 'utf8');
+    return { filename, path: savePath, count: results.length };
+  } finally {
+    await page.close().catch(() => {});
   }
-  // Give Google time to process auth and redirect
-  await page.waitForTimeout(4000);
 }
