@@ -1021,6 +1021,12 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       }
     };
 
+    // Register download listener at CONTEXT level BEFORE clicking any buttons.
+    // Google may trigger the download from a new window/popup, which page-level
+    // listeners miss. Also registering it after clicking risks missing the event
+    // if the download fires quickly.
+    const downloadPromise = s.context.waitForEvent('download', { timeout: 3 * 60 * 1000 });
+
     // Click page-level Eksportuj
     await clickByText(/eksportuj|export/i);
     await page.waitForTimeout(1500);
@@ -1037,7 +1043,7 @@ export async function openPasswordsExport(accountId, onScreenshot) {
     // Google may ask for password again after dialog
     await fillPasswordIfAsked();
 
-    const download = await page.waitForEvent('download', { timeout: 3 * 60 * 1000 });
+    const download = await downloadPromise;
     stopScreenshots();
 
     const suggestedName = download.suggestedFilename() || `passwords-${accountId}.csv`;
