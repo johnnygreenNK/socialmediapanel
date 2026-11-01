@@ -975,15 +975,19 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       await snap();
     }
 
-    // Click the Export button automatically
-    const clickExport = async () => {
-      // Try by jsname attribute first (Google's internal), then by text
-      const byJsname = page.locator('[jsname="V67aGc"]').first();
-      if (await byJsname.count()) { await byJsname.click(); return; }
-      const byText = page.locator('button, [role="button"]').filter({ hasText: /eksportuj|export/i }).first();
-      if (await byText.count()) { await byText.click(); return; }
+    // Click Export button, then confirm the dialog
+    const clickByText = async (pg, pattern) => {
+      const el = pg.locator('button, [role="button"], a').filter({ hasText: pattern }).last();
+      if (await el.count()) { await el.click(); return true; }
+      return false;
     };
-    await clickExport();
+    // First click on the page-level Eksportuj button
+    await clickByText(page, /eksportuj|export/i);
+    await page.waitForTimeout(1200);
+    await snap();
+    // Click confirm button in the dialog (also says Eksportuj)
+    await clickByText(page, /eksportuj|export/i);
+    await page.waitForTimeout(500);
     await snap();
 
     const download = await page.waitForEvent('download', { timeout: 3 * 60 * 1000 });
