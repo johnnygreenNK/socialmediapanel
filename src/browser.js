@@ -1258,6 +1258,13 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
       try {
         await dbg(`wpis ${i + 1}/${total} — szukam linka...`);
         const link = page.locator('a[href^="password/"]').nth(i);
+        // After goBack the SPA resets scroll and lazy entries disappear from DOM.
+        // Scroll down gradually until this entry appears.
+        for (let s = 0; s < 20; s++) {
+          if (await link.count() > 0) break;
+          await page.evaluate(() => window.scrollBy(0, 600));
+          await page.waitForTimeout(300);
+        }
         await link.scrollIntoViewIfNeeded().catch(() => {});
         const entryHref = await link.getAttribute('href').catch(() => null);
         await dbg(`klikam: ${entryHref || '(brak href)'}`);
