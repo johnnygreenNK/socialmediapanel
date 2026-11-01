@@ -894,31 +894,46 @@ export async function exportPasswordsInBackground(accountId) {
       await page.waitForTimeout(2000);
     }
 
-    // Navigate to options. passwords.google.com is a SPA — it loads intro first,
-    // then JS does a client-side navigation to /options. We wait for the URL change.
+    // passwords.google.com is a SPA that always loads at /intro on a full page
+    // load. Reach the export settings by clicking the gear icon (⚙) visible on
+    // the intro/list page — that does an in-SPA navigation to /options.
     if (!page.url().includes('passwords.google.com/options')) {
-      await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
-      // Give SPA time to do its internal navigation
-      await page.waitForURL('**/passwords.google.com/options**', { timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(1500);
+      // Wait for the SPA shell to render the gear button
+      await page.waitForSelector('[aria-label], button', { timeout: 8000 }).catch(() => {});
+      const gearClicked = await page.evaluate(() => {
+        // Gear button: aria-label contains "Ustawienia" / "Settings" / a settings icon
+        for (const btn of document.querySelectorAll('button, a, [role="button"]')) {
+          const lbl = (btn.getAttribute('aria-label') || btn.title || '').toLowerCase();
+          if (/ustawienia|settings|options/.test(lbl)) { btn.click(); return true; }
+        }
+        // Fallback: button that contains only an SVG (icon button at top right)
+        const svgBtns = [...document.querySelectorAll('button')].filter(b => {
+          const txt = (b.textContent || '').trim();
+          return !txt && b.querySelector('svg');
+        });
+        if (svgBtns.length) { svgBtns[svgBtns.length - 1].click(); return true; }
+        return false;
+      }).catch(() => false);
+
+      if (gearClicked) {
+        await page.waitForURL('**/passwords.google.com/options**', { timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+      }
     }
 
     if (!page.url().includes('passwords.google.com/options')) {
-      throw new Error(`Nie udało się dotrzeć do strony eksportu — aktualny URL: ${page.url()}`);
+      throw new Error(`Nie udało się otworzyć ustawień eksportu — URL: ${page.url()}`);
     }
 
-    // Click "Eksportuj" button — targets the specific jsname span Google uses
-    // as the button label, or falls back to any button containing "eksport".
+    // Find and click "Eksportuj" button
     const clickExport = () => page.evaluate(() => {
-      // Primary: button containing a span[jsname="V67aGc"] with "Eksportuj"
-      const spans = document.querySelectorAll('[jsname="V67aGc"]');
-      for (const s of spans) {
+      // Target span[jsname="V67aGc"] containing "Eksportuj" (Google's actual markup)
+      for (const s of document.querySelectorAll('[jsname="V67aGc"]')) {
         if (/eksport/i.test(s.textContent || '')) {
           const btn = s.closest('button') || s.closest('[role="button"]');
           if (btn) { btn.click(); return true; }
         }
       }
-      // Fallback: any button whose text contains "eksport"
       for (const btn of document.querySelectorAll('button, [role="button"]')) {
         if (/eksport/i.test(btn.textContent || '')) { btn.click(); return true; }
       }
