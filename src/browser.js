@@ -919,13 +919,43 @@ export async function openPasswordsExport(accountId, onScreenshot) {
     await snap();
     startScreenshots();
 
-    // If Google still shows /intro or sign-in, wait for user to authenticate
+    // If Google shows /intro or sign-in page, auto-fill stored credentials
     const isAuthPage = (u) => u.includes('/intro') || u.includes('accounts.google.com') || u.includes('/signin');
     if (isAuthPage(page.url())) {
-      await page.waitForURL(
-        (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
-        { timeout: 4 * 60 * 1000 }
-      );
+      const acc = await (await import('./accounts.js')).getAccount(accountId);
+
+      if (acc?.email) {
+        // Fill email
+        await page.waitForSelector('input[type="email"], input[name="identifier"]', { timeout: 10000 }).catch(() => {});
+        const emailInput = page.locator('input[type="email"], input[name="identifier"]').first();
+        if (await emailInput.count()) {
+          await emailInput.fill(acc.email);
+          await page.keyboard.press('Enter');
+          await page.waitForTimeout(2000);
+          await snap();
+        }
+      }
+
+      if (acc?.password) {
+        // Fill password (may appear after email step)
+        await page.waitForSelector('input[type="password"]', { timeout: 10000 }).catch(() => {});
+        const pwInput = page.locator('input[type="password"]').first();
+        if (await pwInput.count()) {
+          await pwInput.fill(acc.password);
+          await page.keyboard.press('Enter');
+          await page.waitForTimeout(3000);
+          await snap();
+        }
+      }
+
+      // If 2FA or other challenge — wait for user to complete (up to 3 min)
+      if (isAuthPage(page.url())) {
+        await page.waitForURL(
+          (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
+          { timeout: 3 * 60 * 1000 }
+        );
+      }
+
       // After sign-in, navigate to /options
       await page.goto('https://passwords.google.com/options?ep=1', {
         waitUntil: 'domcontentloaded',
