@@ -1189,29 +1189,37 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     const total = Math.min(entryCount, 300);
     const results = [];
 
-    // Extract all inputs from detail page (including shadow DOM), click show first
+    // Extract all inputs from detail page, click show-password first.
     async function extractFromDetailPage() {
-      // Click show-password button before reading (Google only populates value after show)
-      await page.evaluate(() => {
-        function find(root) {
-          if (!root) return false;
-          for (const b of (root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : [])) {
-            const lbl = (b.getAttribute('aria-label') || b.title || b.textContent || '').toLowerCase();
-            if (lbl.includes('show') || lbl.includes('pokaż') || lbl.includes('wyświetl') || lbl.includes('visibility') || lbl.includes('reveal')) {
-              b.click(); return true;
-            }
-          }
-          for (const el of (root.querySelectorAll ? root.querySelectorAll('*') : [])) {
-            if (el.shadowRoot && find(el.shadowRoot)) return true;
-          }
-          return false;
+      // Google uses jsaction event delegation — native b.click() in evaluate()
+      // does NOT trigger it. Use Playwright locator.click() which dispatches real
+      // pointer events (pointerdown → mousedown → click) that jsaction catches.
+      try {
+        const showBtn = page.locator(
+          'button[aria-label*="Pokaż lub ukryj"], button[aria-label*="Show or hide"], ' +
+          'button[aria-label*="show password"], button[aria-label*="Reveal password"]'
+        ).first();
+        if (await showBtn.count()) {
+          await showBtn.click({ timeout: 3000 });
+          // Wait until the password input value changes from bullet placeholders
+          await page.waitForFunction(() => {
+            const inputs = Array.from(document.querySelectorAll('input'));
+            return inputs.some(inp =>
+              inp.value && !inp.value.includes('•') &&
+              (inp.getAttribute('aria-label') || '').toLowerCase().includes('hasło')
+            );
+          }, { timeout: 3000 }).catch(() => {});
         }
-        find(document.body);
-      }).catch(() => {});
-      await page.waitForTimeout(800);
+      } catch { /* show button optional */ }
 
       return page.evaluate(() => {
         const r = { site: '', user: '', pw: '' };
+
+        // Site: prefer the actual <a href> link on the page (Google PM shows the
+        // site as a clickable link, NOT as an <input type="url">).
+        const link = document.querySelector('a[href^="http"]:not([href*="google.com"])');
+        if (link) r.site = link.href || link.textContent.trim() || '';
+
         const all = [];
         function walk(root) {
           if (!root) return;
@@ -1232,23 +1240,20 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         walk(document.body);
 
         for (const inp of all) {
-          // Site/URL field
-          if (!r.site && (inp.type === 'url' || inp.aria.includes('url') || inp.aria.includes('witryn') || inp.aria.includes('adres') || inp.aria.includes('website') || inp.aria.includes('site') || inp.name.includes('url') || inp.name.includes('website'))) {
-            r.site = inp.value; continue;
-          }
-          // Password field (type=password before show, or type=text after show with matching label)
-          if (!r.pw && (inp.type === 'password' || inp.aria.includes('hasło') || inp.aria.includes('password') || inp.name.includes('pass'))) {
-            r.pw = inp.value; continue;
-          }
-          // Username — Polish: "nazwa użytkownika", English: "username", also email/login
+          // Username first (before password to avoid mis-classification)
           if (!r.user && (inp.type === 'email' || inp.aria.includes('użytkowni') || inp.aria.includes('username') || inp.aria.includes('user') || inp.aria.includes('email') || inp.aria.includes('login') || inp.name.includes('user') || inp.name.includes('email') || inp.name.includes('login'))) {
             r.user = inp.value; continue;
           }
+          // Password — skip if still showing bullet placeholders (show-click not yet done)
+          if (!r.pw && (inp.type === 'password' || inp.aria.includes('hasło') || inp.aria.includes('password') || inp.name.includes('pass'))) {
+            if (!inp.value.includes('•')) r.pw = inp.value;
+            continue;
+          }
         }
 
-        // Positional fallback: assign remaining non-empty inputs in order
+        // Positional fallback for remaining non-bullet, non-google-domain values
         const used = new Set([r.site, r.user, r.pw].filter(Boolean));
-        const rest = all.filter(i => !used.has(i.value));
+        const rest = all.filter(i => !used.has(i.value) && !i.value.includes('•'));
         for (const inp of rest) {
           if (!r.user) { r.user = inp.value; continue; }
           if (!r.pw) { r.pw = inp.value; break; }
