@@ -1259,10 +1259,42 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         await link.click({ timeout: 8000 });
         await page.waitForTimeout(1500);
 
-        // Guard: if Google somehow redirected to auth, try password and wait
-        if (isAuthPage(page.url()) && acc?.password) {
-          const pwInp = page.locator('input[type="password"]').first();
-          if (await pwInp.count()) { await pwInp.fill(acc.password); await clickDalej(page); await page.waitForTimeout(2000); }
+        // Guard: if Google redirected to auth during loop entry, handle robustly
+        if (isAuthPage(page.url())) {
+          // 1st attempt: fill password automatically
+          if (acc?.password) {
+            const pwInp = page.locator('input[type="password"]').first();
+            if (await pwInp.count()) {
+              await pwInp.fill(acc.password);
+              await clickDalej(page);
+              await page.waitForTimeout(2000);
+            }
+          }
+          // 2nd check: still on auth → notify and wait for human
+          if (isAuthPage(page.url())) {
+            stopScreenshots();
+            await snap();
+            await telegram.sendMessage(
+              `🔐 [${accountId}] Google prosi o weryfikację przy wpisie ${i + 1}/${total}.\n` +
+              `Wpisz hasło / potwierdź 2FA w przeglądarce.\n` +
+              `Bot czeka 3 minuty, potem wznawia eksport.`
+            );
+            await page.waitForURL(
+              (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
+              { timeout: 3 * 60 * 1000 }
+            ).catch(() => {});
+            startScreenshots();
+            await snap();
+            // If still stuck on auth after wait, skip this entry
+            if (isAuthPage(page.url())) {
+              results.push(`wpis-${i + 1} | (pominięty — auth timeout)`);
+              if (onProgress) onProgress(results.length, total);
+              // Re-navigate to list before continuing
+              await gotoTolerant('https://passwords.google.com/');
+              await page.waitForTimeout(1500);
+              continue;
+            }
+          }
         }
 
         const data = await extractFromDetailPage();
