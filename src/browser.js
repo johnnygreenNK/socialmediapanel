@@ -860,3 +860,146 @@ export function listStatus() {
 export async function shutdownAll() {
   await Promise.all([...sessions.keys()].map((id) => stop(id).catch(() => {})));
 }
+
+// ── Google Passwords export ───────────────────────────────────────────────────
+// Cache: accountId → { ts, txt: Buffer, csv: Buffer, count }
+const _pwCache = new Map();
+const _PW_CACHE_TTL = 60 * 60 * 1000; // 60 min
+
+export function getPasswordsCache(accountId) {
+  const e = _pwCache.get(accountId);
+  if (!e) return null;
+  if (Date.now() - e.ts > _PW_CACHE_TTL) { _pwCache.delete(accountId); return null; }
+  return e;
+}
+
+export async function exportPasswordsInBackground(accountId) {
+  const s = sessions.get(accountId);
+  if (!s) throw new Error('Sesja nie jest uruchomiona');
+  const acc = await getAccount(accountId);
+  if (!acc) throw new Error('Nie znaleziono konta');
+
+  const page = await s.context.newPage();
+  try {
+    // Navigate to passwords.google.com export options
+    await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'load', timeout: 30000 });
+    await page.waitForTimeout(2000);
+
+    const url = page.url();
+    // If not on options page — need re-auth
+    if (!url.includes('passwords.google.com/options') && !url.includes('passwords.google.com/intro')) {
+      // Google redirected us to sign-in
+      await _googleSignInForExport(page, acc);
+    } else if (url.includes('/intro') || url.includes('accounts.google.com')) {
+      await _googleSignInForExport(page, acc);
+    }
+
+    await page.waitForTimeout(1500);
+
+    // Find and click Export button
+    const exported = await page.evaluate(() => {
+      function findClick(root) {
+        if (!root) return false;
+        for (const el of root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : []) {
+          const lbl = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+          if (/export|eksport/.test(lbl)) { el.click(); return true; }
+        }
+        for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+          if (el.shadowRoot && findClick(el.shadowRoot)) return true;
+        }
+        return false;
+      }
+      return findClick(document.body);
+    }).catch(() => false);
+
+    if (!exported) throw new Error(`export button not found on ${page.url()}`);
+
+    // Confirmation dialog — click export again
+    await page.waitForTimeout(800);
+    await page.evaluate(() => {
+      function findClick(root) {
+        if (!root) return false;
+        for (const el of root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : []) {
+          const lbl = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+          if (/export|eksport/.test(lbl)) { el.click(); return true; }
+        }
+        for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+          if (el.shadowRoot && findClick(el.shadowRoot)) return true;
+        }
+        return false;
+      }
+      findClick(document.body);
+    }).catch(() => {});
+
+    // Wait for CSV download
+    const download = await page.waitForEvent('download', { timeout: 40000 });
+    const dlPath = await download.path();
+    if (!dlPath) throw new Error('Plik CSV niedostępny po pobraniu');
+
+    const csvBuf = await fsp.readFile(dlPath);
+    await fsp.unlink(dlPath).catch(() => {});
+
+    // Parse CSV → txt format: site | user | password
+    const csvText = csvBuf.toString('utf8');
+    const rows = csvText.split('\n').slice(1).filter(Boolean);
+    const results = rows.map(line => {
+      // RFC 4180: fields may be quoted; naive split on comma works for most Google exports
+      const parts = [];
+      let cur = '', inQ = false;
+      for (const ch of line) {
+        if (ch === '"') { inQ = !inQ; }
+        else if (ch === ',' && !inQ) { parts.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      parts.push(cur);
+      const [site, , user, pw] = parts;
+      return `${(site || '').trim()} | ${(user || '').trim()} | ${(pw || '').trim()}`;
+    }).filter(l => l.length > 6);
+
+    _pwCache.set(accountId, {
+      ts: Date.now(),
+      txt: Buffer.from(results.join('\n'), 'utf8'),
+      csv: csvBuf,
+      count: results.length,
+    });
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+async function _googleSignInForExport(page, acc) {
+  if (!acc.email || !acc.password) throw new Error('Brak danych logowania dla konta (email/password)');
+  await page.goto(
+    `https://accounts.google.com/v3/signin/identifier?continue=${encodeURIComponent('https://passwords.google.com/options?ep=1')}&flowName=GlifWebSignIn`,
+    { waitUntil: 'load', timeout: 30000 }
+  );
+  await page.waitForTimeout(2000);
+
+  // Account picker
+  const picker = await page.$('[data-email], [data-identifier], [aria-label*="@"]').catch(() => null);
+  if (picker) { await picker.click(); await page.waitForTimeout(2000); }
+
+  // Email field
+  const emailInp = await page.$('input[type="email"]').catch(() => null);
+  if (emailInp) {
+    await emailInp.click();
+    await page.keyboard.type(acc.email, { delay: 40 });
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(2500);
+  }
+
+  // Password field — wait for real visibility
+  await page.waitForFunction(() => {
+    const inputs = document.querySelectorAll('input[type="password"]');
+    return [...inputs].some(i => i.offsetParent !== null);
+  }, { timeout: 15000 }).catch(() => {});
+
+  const pwInp = await page.$('input[type="password"]:not([tabindex="-1"])').catch(() => null)
+             || await page.$('input[type="password"]').catch(() => null);
+  if (pwInp) {
+    await pwInp.click({ force: true }).catch(() => {});
+    await page.keyboard.type(acc.password, { delay: 40 });
+    await page.keyboard.press('Enter');
+  }
+  await page.waitForTimeout(4000);
+}
