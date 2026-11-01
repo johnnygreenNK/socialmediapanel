@@ -1111,7 +1111,9 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     startScreenshots();
 
     const acc = await (await import('./accounts.js')).getAccount(accountId);
-    const isAuthPage = (u) => u.includes('/intro') || u.includes('accounts.google.com') || u.includes('/signin');
+    // /challenge covers passwords.google.com/challenge/pwd — Google asks to re-enter
+    // your Google password before revealing saved passwords (common on 2nd+ run)
+    const isAuthPage = (u) => u.includes('/intro') || u.includes('accounts.google.com') || u.includes('/signin') || u.includes('/challenge');
 
     if (isAuthPage(page.url())) {
       if (page.url().includes('/intro')) {
@@ -1150,7 +1152,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             `Bot czeka 4 minuty.`
           );
           await page.waitForURL(
-            (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
+            (url) => !isAuthPage(url.href),
             { timeout: 4 * 60 * 1000 }
           );
           startScreenshots();
@@ -1280,7 +1282,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
               `Bot czeka 3 minuty, potem wznawia eksport.`
             );
             await page.waitForURL(
-              (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
+              (url) => !isAuthPage(url.href),
               { timeout: 3 * 60 * 1000 }
             ).catch(() => {});
             startScreenshots();
@@ -1297,6 +1299,9 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
           }
         }
 
+        // Wait a bit more for shadow DOM to populate (Google SPA can be slow)
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        const detailUrl = page.url();
         const data = await extractFromDetailPage();
 
         // Navigate back to list (SPA history)
@@ -1304,7 +1309,8 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
           .catch(() => page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }));
         await page.waitForTimeout(600);
 
-        const site = data.site || `wpis-${i + 1}`;
+        // Use the detail page URL as site fallback so results are still useful
+        const site = data.site || (detailUrl.includes('passwords.google.com/password/') ? `entry-${i + 1}` : detailUrl) || `wpis-${i + 1}`;
         const user = data.user || '';
         const pw = data.pw || '(nie udało się)';
         results.push(`${site} | ${user} | ${pw}`);
