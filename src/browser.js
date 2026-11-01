@@ -971,9 +971,20 @@ export async function openPasswordsExport(accountId, onScreenshot) {
         waitUntil: 'domcontentloaded',
         timeout: 15000,
       });
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1500);
       await snap();
     }
+
+    // Click the Export button automatically
+    const clickExport = async () => {
+      // Try by jsname attribute first (Google's internal), then by text
+      const byJsname = page.locator('[jsname="V67aGc"]').first();
+      if (await byJsname.count()) { await byJsname.click(); return; }
+      const byText = page.locator('button, [role="button"]').filter({ hasText: /eksportuj|export/i }).first();
+      if (await byText.count()) { await byText.click(); return; }
+    };
+    await clickExport();
+    await snap();
 
     const download = await page.waitForEvent('download', { timeout: 3 * 60 * 1000 });
     stopScreenshots();
