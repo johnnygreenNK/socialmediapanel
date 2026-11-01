@@ -896,7 +896,7 @@ export async function openPasswordsExport(accountId, onScreenshot) {
   };
 
   try {
-    await page.goto('https://passwords.google.com/options?ep=1', {
+    await page.goto('https://passwords.google.com/', {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
@@ -905,15 +905,37 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci (ERR_TUNNEL_CONNECTION_FAILED).');
     }
 
-    // Take first screenshot immediately so user sees what's on screen
-    try {
-      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 8000 });
-      if (onScreenshot && buf) onScreenshot(buf, page.url());
-    } catch { /* ignore */ }
-
+    // Take first screenshot so user sees what's on screen
+    const snap = async () => {
+      try {
+        const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 8000 });
+        if (onScreenshot && buf) onScreenshot(buf, page.url());
+      } catch { /* ignore */ }
+    };
+    await snap();
     startScreenshots();
 
-    const download = await page.waitForEvent('download', { timeout: 5 * 60 * 1000 });
+    // If landed on /intro (not yet signed in), wait for user to sign in
+    // then navigate to /options ourselves
+    const isAuthPage = (u) => u.includes('/intro') || u.includes('accounts.google.com') || u.includes('/signin');
+    if (isAuthPage(page.url())) {
+      // Wait up to 4 minutes for user to sign in (URL leaves auth pages)
+      await page.waitForFunction(
+        () => !window.location.href.includes('/intro') && !window.location.href.includes('accounts.google.com') && !window.location.href.includes('/signin'),
+        { timeout: 4 * 60 * 1000 }
+      );
+      await snap();
+    }
+
+    // Now navigate to /options
+    await page.goto('https://passwords.google.com/options?ep=1', {
+      waitUntil: 'domcontentloaded',
+      timeout: 15000,
+    });
+    await page.waitForTimeout(1500);
+    await snap();
+
+    const download = await page.waitForEvent('download', { timeout: 3 * 60 * 1000 });
     stopScreenshots();
 
     const suggestedName = download.suggestedFilename() || `passwords-${accountId}.csv`;
