@@ -83,6 +83,12 @@ async function launch(accountId, adminIp) {
   const dir = profilePath(accountId);
   await fsp.mkdir(dir, { recursive: true });
 
+  // Remove Chrome lock files left behind after a crash — Chromium waits
+  // forever for the lock if it isn't cleared, hanging the launch call.
+  for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    await fsp.unlink(path.join(dir, f)).catch(() => {});
+  }
+
   // Per-account proxy overrides global config. useProxy=false disables both.
   const accProxyServer = account.proxyServer || config.proxyServer;
   const accProxyUser   = account.proxyServer ? (account.proxyUsername || '') : config.proxyUsername;
@@ -96,6 +102,7 @@ async function launch(accountId, adminIp) {
 
   const context = await chromium.launchPersistentContext(dir, {
     headless: true,
+    timeout: 30000,
     channel: account.channel || config.browserChannel || undefined,
     viewport: DEFAULT_VIEWPORT,
     userAgent:
