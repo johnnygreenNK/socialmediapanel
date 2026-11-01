@@ -162,6 +162,10 @@ async function launch(accountId, adminIp) {
     timezoneId,
     // Suppress Playwright's injection of navigator.webdriver = true
     bypassCSP: false,
+    // Required for context.waitForEvent('download') to work.
+    // Without this Playwright cancels every download instead of intercepting it,
+    // so the 'download' event never fires and the context can destabilise.
+    acceptDownloads: true,
   });
 
   // Remove the remaining webdriver trace that Playwright injects via CDP
