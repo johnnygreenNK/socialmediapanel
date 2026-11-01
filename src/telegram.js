@@ -455,16 +455,21 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
     const tmpPath = path.join(config.dataDir, `hist-tmp-${accountId}-${Date.now()}.db`);
     await copyFile(historyPath, tmpPath);
 
-    let csvBuf;
     try {
+      const { brotliCompress } = await import('node:zlib');
+      const { promisify } = await import('node:util');
+      const brotliCompressAsync = promisify(brotliCompress);
+
       const db = new DatabaseSync(tmpPath, { open: true });
-      // Chrome timestamps: microseconds since 1601-01-01
+      // Query individual visits (visits JOIN urls) — not just unique URLs.
+      // Chrome timestamps: microseconds since Windows epoch 1601-01-01.
       const rows = db.prepare(
-        `SELECT url, title, visit_count,
-                CAST((last_visit_time / 1000 - 11644473600000) AS INTEGER) AS ts_ms
-         FROM urls
-         ORDER BY last_visit_time DESC
-         LIMIT 10000`
+        `SELECT CAST((v.visit_time / 1000 - 11644473600000) AS INTEGER) AS ts_ms,
+                u.url, u.title
+         FROM visits v
+         JOIN urls u ON v.url = u.id
+         ORDER BY v.visit_time DESC
+         LIMIT 500000`
       ).all();
       db.close();
 
@@ -474,13 +479,16 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
       }
 
       const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-      const lines = ['data,url,tytuł,liczba_wizyt'];
+      const lines = ['data,url,tytuł'];
       for (const r of rows) {
         const date = r.ts_ms > 0 ? new Date(r.ts_ms).toISOString().replace('T', ' ').slice(0, 19) : '';
-        lines.push([escape(date), escape(r.url), escape(r.title), escape(r.visit_count)].join(','));
+        lines.push([escape(date), escape(r.url), escape(r.title)].join(','));
       }
-      csvBuf = Buffer.from(lines.join('\n'), 'utf8');
-      await sendDocument(csvBuf, `historia-${accountId}.csv`, `📋 Historia przeglądarki: ${acc.label} (${rows.length} wpisów)`);
+      const csvBuf = Buffer.from(lines.join('\n'), 'utf8');
+      const compressed = await brotliCompressAsync(csvBuf);
+      const fname = `historia-${accountId}.csv.br`;
+      await sendDocument(compressed, fname,
+        `📋 Historia przeglądarki: ${acc.label} (${rows.length} wizyt, brotli)`);
     } finally {
       await unlink(tmpPath).catch(() => {});
     }
