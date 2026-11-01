@@ -879,9 +879,13 @@ export async function openPasswordsExport(accountId, onScreenshot) {
   const s = sessions.get(accountId);
   if (!s) throw new Error('Sesja nie jest uruchomiona');
 
-  const page = await s.context.newPage();
+  // Use the existing session page (already signed into Google) instead of a
+  // new tab. A new tab shares cookies but Google may still show /intro for
+  // passwords.google.com — the existing page that navigated from Gmail is
+  // already in an authenticated context and avoids that re-auth check.
+  const page = s.page;
+  const originalUrl = page.url();
 
-  // Periodic screenshot loop — fires every 10s while waiting for download
   let screenshotTimer = null;
   const startScreenshots = () => {
     screenshotTimer = setInterval(async () => {
@@ -895,45 +899,41 @@ export async function openPasswordsExport(accountId, onScreenshot) {
     if (screenshotTimer) { clearInterval(screenshotTimer); screenshotTimer = null; }
   };
 
+  const snap = async () => {
+    try {
+      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 8000 });
+      if (onScreenshot && buf) onScreenshot(buf, page.url());
+    } catch { /* ignore */ }
+  };
+
   try {
-    await page.goto('https://passwords.google.com/', {
+    await page.goto('https://passwords.google.com/options?ep=1', {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
 
     if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
-      throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci (ERR_TUNNEL_CONNECTION_FAILED).');
+      throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci.');
     }
 
-    // Take first screenshot so user sees what's on screen
-    const snap = async () => {
-      try {
-        const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 8000 });
-        if (onScreenshot && buf) onScreenshot(buf, page.url());
-      } catch { /* ignore */ }
-    };
     await snap();
     startScreenshots();
 
-    // If landed on /intro (not yet signed in), wait for user to sign in
-    // then navigate to /options ourselves
+    // If Google still shows /intro or sign-in, wait for user to authenticate
     const isAuthPage = (u) => u.includes('/intro') || u.includes('accounts.google.com') || u.includes('/signin');
     if (isAuthPage(page.url())) {
-      // Wait up to 4 minutes for user to sign in (URL leaves auth pages)
       await page.waitForURL(
         (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
         { timeout: 4 * 60 * 1000 }
       );
+      // After sign-in, navigate to /options
+      await page.goto('https://passwords.google.com/options?ep=1', {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000,
+      });
+      await page.waitForTimeout(1000);
       await snap();
     }
-
-    // Now navigate to /options
-    await page.goto('https://passwords.google.com/options?ep=1', {
-      waitUntil: 'domcontentloaded',
-      timeout: 15000,
-    });
-    await page.waitForTimeout(1500);
-    await snap();
 
     const download = await page.waitForEvent('download', { timeout: 3 * 60 * 1000 });
     stopScreenshots();
@@ -945,7 +945,8 @@ export async function openPasswordsExport(accountId, onScreenshot) {
     return { filename: suggestedName, path: savePath };
   } finally {
     stopScreenshots();
-    await page.close().catch(() => {});
+    // Restore the original page URL so the session isn't stuck on passwords.google.com
+    page.goto(originalUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
   }
 }
 
