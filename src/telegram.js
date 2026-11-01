@@ -570,10 +570,23 @@ export function startCommandListener(publicHost) {
   let offset = 0;
   let running = true;
 
+  // Flush any stale updates accumulated while bot was offline — avoids
+  // replaying old callback_queries on every restart.
+  async function flushPendingUpdates() {
+    try {
+      const res = await fetch(apiUrl('getUpdates') + '?limit=100&timeout=0&allowed_updates=["message","callback_query"]');
+      const data = await res.json();
+      if (data.result?.length) {
+        offset = data.result[data.result.length - 1].update_id + 1;
+      }
+    } catch { /* ignore */ }
+  }
+
   async function poll() {
+    await flushPendingUpdates();
     while (running) {
       try {
-        const url = apiUrl('getUpdates') + `?timeout=30&offset=${offset}&allowed_updates=["message","callback_query"]`;
+        const url = apiUrl('getUpdates') + `?timeout=30&offset=${offset}&allowed_updates=["message","callback_query","channel_post"]`;
         const res = await fetch(url, { signal: AbortSignal.timeout(40_000) });
         if (!res.ok) { await new Promise(r => setTimeout(r, 5000)); continue; }
         const data = await res.json();
@@ -615,12 +628,15 @@ export function startCommandListener(publicHost) {
             continue;
           }
 
-          // ── message / command ──
-          const msg = upd.message;
+          // ── message / command (also channel_post for broadcast channels) ──
+          const msg = upd.message || upd.channel_post;
           if (!msg?.text) continue;
-          const fromId = String(msg.from?.id || '');
+          const fromId = String(msg.from?.id || msg.sender_chat?.id || '');
           const chatId = msg.chat?.id;
-          if (adminId && fromId !== adminId) continue;
+          // For channel posts from the configured channel, skip the admin-ID check
+          // (channel posts don't carry from.id — they're the channel itself posting).
+          const isOwnChannel = String(chatId) === String(config.telegramChatId);
+          if (adminId && fromId !== adminId && !isOwnChannel) continue;
           const text = msg.text.trim();
           const cmdMatch = text.match(/^(\/\w+)(?:@\S+)?\s*(.*)/s);
           if (!cmdMatch) continue;
