@@ -888,10 +888,15 @@ export async function exportPasswordsInBackground(accountId) {
     // Give JS a moment to execute and redirects to settle
     await page.waitForTimeout(3000);
 
-    // If not on options page, authenticate then navigate there directly
-    if (!page.url().includes('passwords.google.com/options')) {
+    // If not authenticated on passwords.google.com at all → sign in first
+    if (!page.url().includes('passwords.google.com')) {
       await _googleSignInForExport(page, acc);
-      // Auth established session cookies — now navigate to options directly
+      await page.waitForTimeout(2000);
+    }
+
+    // Now navigate to options from within the passwords.google.com domain
+    // (a same-site hop is less likely to trigger redirect loops than coming from accounts.google.com)
+    if (!page.url().includes('passwords.google.com/options')) {
       await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
       await page.waitForTimeout(3000);
     }
