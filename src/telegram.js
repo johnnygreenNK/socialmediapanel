@@ -381,7 +381,10 @@ async function handleAccountMenu(chatId, accountId, callbackQueryId, publicHost)
         { text: '🍪 Cookies', callback_data: `cook:${accountId}` },
       ],
       [
-        { text: '📋 Historia wyszukiwań', callback_data: `hist:${accountId}` },
+        { text: '📋 Historia Chrome (profil)', callback_data: `hist:${accountId}` },
+        { text: '🔍 Aktywność Google (konto)', callback_data: `gact:${accountId}` },
+      ],
+      [
         { text: '🔐 Google Passwords', callback_data: `gpas:${accountId}` },
       ],
     ];
@@ -498,6 +501,47 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
     const fname = isAll ? 'historia-wszystkie.csv.gz' : `historia-${accountId}.csv.gz`;
     const label = isAll ? `wszystkie konta` : accounts[0].label;
     await sendDocument(compressed, fname, `📋 Historia przeglądarki: ${label} (${rows.length} wizyt)`);
+  } catch (err) {
+    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+  }
+}
+
+async function handleGoogleActivity(chatId, accountId, callbackQueryId) {
+  await answerCallback(callbackQueryId, '⏳ Otwieram historię aktywności Google...');
+  try {
+    const { getAccount, loadAccounts: _la } = await import('./accounts.js');
+    const { start } = await import('./browser.js');
+    const { gzip } = await import('node:zlib');
+    const { promisify } = await import('node:util');
+    const gzipAsync = promisify(gzip);
+
+    const acc = await getAccount(accountId);
+    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+
+    const { getPage } = await import('./browser.js');
+    if (!getPage(accountId)) {
+      await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
+      await start(accountId, '127.0.0.1');
+      await new Promise(r => setTimeout(r, 3000));
+    }
+
+    await replyTo(chatId,
+      `🔍 Pobieram aktywność Google dla "${acc.label}".\nScrolluję myactivity.google.com — może potrwać 1–2 min. Bot wysyła screeny co 10 sek.`
+    );
+
+    const { exportGoogleActivity } = await import('./browser.js');
+    const onScreenshot = (buf, url) => sendPhoto(buf, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
+    const entries = await exportGoogleActivity(accountId, onScreenshot);
+
+    const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = ['data,aktywnosc'];
+    for (const e of entries) {
+      lines.push([escape(e.date), escape(e.text)].join(','));
+    }
+    const csvBuf = Buffer.from(lines.join('\n'), 'utf8');
+    const compressed = await gzipAsync(csvBuf);
+    await sendDocument(compressed, `aktywnosc-${accountId}.csv.gz`,
+      `🔍 Aktywność Google: ${acc.label} (${entries.length} wpisów)`);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
   }
@@ -687,6 +731,8 @@ export function startCommandListener(publicHost) {
               await handleCookies(chatId, [d.slice(5)]);
             } else if (d.startsWith('hist:')) {
               await handleHistoryFile(chatId, d.slice(5), cq.id);
+            } else if (d.startsWith('gact:')) {
+              await handleGoogleActivity(chatId, d.slice(5), cq.id);
             } else if (d.startsWith('gpas:')) {
               await handleGooglePasswords(chatId, d.slice(5), cq.id);
             } else if (d.startsWith('gpw_csv:')) {
