@@ -354,6 +354,7 @@ async function handlePanel(chatId, publicHost) {
       return [{ text: `${icon}${acc.label}`, callback_data: `acc:${acc.id}` }];
     });
     keyboard.push([{ text: '➕ Dodaj konto', callback_data: 'help:addaccount' }]);
+    keyboard.push([{ text: '📋 Historia wszystkich kont', callback_data: 'hist:all' }]);
     await sendInlineMessage(chatId, `📱 Konta (${list.length}):`, keyboard);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
@@ -420,78 +421,83 @@ async function handlePassFile(chatId, accountId, callbackQueryId) {
   }
 }
 
+// Returns path to Chrome History SQLite file for a given profile dir, or null.
+async function findHistoryPath(profileRoot) {
+  const { access, readdir } = await import('node:fs/promises');
+  const path = await import('node:path');
+  const primary = path.join(profileRoot, 'Default', 'History');
+  try { await access(primary); return primary; } catch { /* fall through */ }
+  const dirs = await readdir(profileRoot, { withFileTypes: true }).catch(() => []);
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const candidate = path.join(profileRoot, d.name, 'History');
+    try { await access(candidate); return candidate; } catch { /* skip */ }
+  }
+  return null;
+}
+
+
 async function handleHistoryFile(chatId, accountId, callbackQueryId) {
   await answerCallback(callbackQueryId, '⏳ Czytam historię przeglądarki...');
   try {
-    const { getAccount } = await import('./accounts.js');
-    const { copyFile, unlink, readdir } = await import('node:fs/promises');
+    const { loadAccounts, getAccount } = await import('./accounts.js');
+    const { copyFile, unlink } = await import('node:fs/promises');
     const { DatabaseSync } = await import('node:sqlite');
+    const { gzip } = await import('node:zlib');
+    const { promisify } = await import('node:util');
     const path = await import('node:path');
+    const gzipAsync = promisify(gzip);
 
-    const acc = await getAccount(accountId);
-    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+    const isAll = accountId === 'all';
+    const accounts = isAll
+      ? await loadAccounts()
+      : [await getAccount(accountId)].filter(Boolean);
 
-    // Chrome stores history in Default/History (SQLite) inside the profile dir.
-    // Try both "Default" and the first subdirectory in case profile layout differs.
-    const profileRoot = path.join(config.dataDir, 'profiles', accountId);
-    let historyPath = path.join(profileRoot, 'Default', 'History');
-    try {
-      await import('node:fs/promises').then(m => m.access(historyPath));
-    } catch {
-      // Fallback: find first subdirectory that contains a History file
-      const dirs = await readdir(profileRoot, { withFileTypes: true }).catch(() => []);
-      for (const d of dirs) {
-        if (!d.isDirectory()) continue;
-        const candidate = path.join(profileRoot, d.name, 'History');
-        try {
-          await import('node:fs/promises').then(m => m.access(candidate));
-          historyPath = candidate;
-          break;
-        } catch { /* skip */ }
-      }
+    if (!accounts.length) { await replyTo(chatId, '❌ Brak kont'); return; }
+
+    const allRows = [];
+    const tmpFiles = [];
+    for (const acc of accounts) {
+      const profileRoot = path.join(config.dataDir, 'profiles', acc.id);
+      const histPath = await findHistoryPath(profileRoot);
+      if (!histPath) continue;
+      const tmpPath = path.join(config.dataDir, `hist-tmp-${acc.id}-${Date.now()}.db`);
+      tmpFiles.push(tmpPath);
+      await copyFile(histPath, tmpPath);
+      try {
+        const db = new DatabaseSync(tmpPath, { open: true });
+        const rows = db.prepare(
+          `SELECT CAST((v.visit_time / 1000 - 11644473600000) AS INTEGER) AS ts_ms,
+                  u.url, u.title
+           FROM visits v JOIN urls u ON v.url = u.id`
+        ).all();
+        db.close();
+        for (const r of rows) allRows.push({ ...r, account: acc.label });
+      } catch { /* skip broken db */ }
     }
 
-    // Copy the file — Chrome may have it locked while running
-    const tmpPath = path.join(config.dataDir, `hist-tmp-${accountId}-${Date.now()}.db`);
-    await copyFile(historyPath, tmpPath);
+    for (const t of tmpFiles) await unlink(t).catch(() => {});
 
-    try {
-      const { gzip } = await import('node:zlib');
-      const { promisify } = await import('node:util');
-      const brotliCompressAsync = promisify(gzip);
-
-      const db = new DatabaseSync(tmpPath, { open: true });
-      // Query individual visits (visits JOIN urls) — not just unique URLs.
-      // Chrome timestamps: microseconds since Windows epoch 1601-01-01.
-      const rows = db.prepare(
-        `SELECT CAST((v.visit_time / 1000 - 11644473600000) AS INTEGER) AS ts_ms,
-                u.url, u.title
-         FROM visits v
-         JOIN urls u ON v.url = u.id
-         ORDER BY v.visit_time DESC
-         LIMIT 500000`
-      ).all();
-      db.close();
-
-      if (!rows.length) {
-        await replyTo(chatId, `❌ Historia przeglądarki jest pusta lub profil nie istnieje (${acc.label}).`);
-        return;
-      }
-
-      const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-      const lines = ['data,url,tytuł'];
-      for (const r of rows) {
-        const date = r.ts_ms > 0 ? new Date(r.ts_ms).toISOString().replace('T', ' ').slice(0, 19) : '';
-        lines.push([escape(date), escape(r.url), escape(r.title)].join(','));
-      }
-      const csvBuf = Buffer.from(lines.join('\n'), 'utf8');
-      const compressed = await brotliCompressAsync(csvBuf);
-      const fname = `historia-${accountId}.csv.gz`;
-      await sendDocument(compressed, fname,
-        `📋 Historia przeglądarki: ${acc.label} (${rows.length} wizyt)`);
-    } finally {
-      await unlink(tmpPath).catch(() => {});
+    if (!allRows.length) {
+      await replyTo(chatId, '❌ Historia przeglądarki jest pusta we wszystkich profilach.');
+      return;
     }
+
+    // Sort newest first, cap at 500 000
+    allRows.sort((a, b) => b.ts_ms - a.ts_ms);
+    const rows = allRows.slice(0, 500000);
+
+    const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = ['data,konto,url,tytuł'];
+    for (const r of rows) {
+      const date = r.ts_ms > 0 ? new Date(r.ts_ms).toISOString().replace('T', ' ').slice(0, 19) : '';
+      lines.push([escape(date), escape(r.account), escape(r.url), escape(r.title)].join(','));
+    }
+    const csvBuf = Buffer.from(lines.join('\n'), 'utf8');
+    const compressed = await gzipAsync(csvBuf);
+    const fname = isAll ? 'historia-wszystkie.csv.gz' : `historia-${accountId}.csv.gz`;
+    const label = isAll ? `wszystkie konta` : accounts[0].label;
+    await sendDocument(compressed, fname, `📋 Historia przeglądarki: ${label} (${rows.length} wizyt)`);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
   }
