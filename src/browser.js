@@ -921,7 +921,7 @@ export async function openPasswordsExport(accountId, onScreenshot) {
     if (isAuthPage(page.url())) {
       // Wait up to 4 minutes for user to sign in (URL leaves auth pages)
       await page.waitForURL(
-        (url) => !url.includes('/intro') && !url.includes('accounts.google.com') && !url.includes('/signin'),
+        (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
         { timeout: 4 * 60 * 1000 }
       );
       await snap();
