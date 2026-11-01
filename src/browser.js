@@ -1031,8 +1031,23 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       }
     };
 
+    // Allow Chrome to save downloads to config.dataDir in headless mode.
+    try {
+      const cdp = await s.context.newCDPSession(page);
+      await cdp.send('Browser.setDownloadBehavior', {
+        behavior: 'allow',
+        downloadPath: config.dataDir,
+        eventsEnabled: false,
+      }).catch(() =>
+        cdp.send('Page.setDownloadBehavior', {
+          behavior: 'allow',
+          downloadPath: config.dataDir,
+        }).catch(() => {})
+      );
+    } catch { /* ignore */ }
+
     // Snapshot of CSV files that exist BEFORE we start clicking, so we can
-    // detect the new file Chrome saves via --download-default-directory.
+    // detect the new file Chrome saves to config.dataDir.
     const csvBefore = new Set(
       (await fsp.readdir(config.dataDir).catch(() => [])).filter(f => f.endsWith('.csv'))
     );
