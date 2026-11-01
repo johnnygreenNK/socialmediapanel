@@ -458,26 +458,23 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
 async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
   await answerCallback(callbackQueryId);
   const keyboard = [
-    [
-      { text: '📥 Eksport CSV (ręczny)', callback_data: `gpw_csv:${accountId}` },
-    ],
-    [
-      { text: '📋 Lista haseł (powolna)', callback_data: `gpw_rows:${accountId}` },
-    ],
+    [{ text: '📥 Eksport CSV (ręczny)', callback_data: `gpw_csv:${accountId}` }],
+    [{ text: '📋 Lista haseł (powolna)', callback_data: `gpw_rows:${accountId}` }],
   ];
   await sendInlineMessage(chatId,
     '🔐 Wybierz metodę eksportu haseł Google:\n\n' +
-    '📥 *Eksport CSV* — otwiera passwords.google.com/options, logujesz się sam w przeglądarce i klikasz Eksportuj. Bot przechwyci plik i zapisze lokalnie (plik NIE jest wysyłany do Telegrama).\n\n' +
+    '📥 *Eksport CSV* — otwiera passwords.google.com/options, logujesz się sam i klikasz Eksportuj. Bot wysyła plik CSV na kanał.\n\n' +
     '📋 *Lista haseł* — bot klika każdy wpis po kolei i wyciąga hasła (wolne, wymaga zalogowanej sesji).',
     keyboard
   );
 }
 
-// Option 1: User-driven CSV export — user auth + click, bot intercepts download
+// Option 1: User-driven CSV export — user auth + click, bot sends CSV file
 async function handleGpwCsv(chatId, accountId, callbackQueryId) {
   await answerCallback(callbackQueryId, '⏳ Otwieram menadżer haseł...');
   try {
     const { getAccount } = await import('./accounts.js');
+    const { readFile } = await import('node:fs/promises');
     const acc = await getAccount(accountId);
     if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
 
@@ -494,15 +491,14 @@ async function handleGpwCsv(chatId, accountId, callbackQueryId) {
     await replyTo(chatId,
       `📥 Otwieram passwords.google.com/options w przeglądarce "${acc.label}".\n\n` +
       `Zaloguj się (jeśli wymagane) i kliknij przycisk *Eksportuj hasła*.\n\n` +
-      `Bot poczeka 5 minut na pobranie pliku.`
+      `Bot wyśle plik CSV gdy tylko go pobierze (max 5 min).`
     );
 
     const result = await openPasswordsExport(accountId);
 
-    await replyTo(chatId,
-      `✅ Plik CSV zapisany lokalnie na serwerze:\n\`${result.path}\`\n\n` +
-      `⚠️ Plik zawiera hasła w postaci niezaszyfrowanej. Nie jest wysyłany do Telegrama.`
-    );
+    const buf = await readFile(result.path);
+    await sendDocument(buf, result.filename, `🔐 Google Passwords: ${acc.label}`);
+    await replyTo(chatId, `✅ Gotowe — plik CSV wysłany powyżej.`);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd eksportu CSV: ${err?.message || err}`);
   }
@@ -513,6 +509,7 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
   await answerCallback(callbackQueryId, '⏳ Uruchamiam pobieranie haseł...');
   try {
     const { getAccount } = await import('./accounts.js');
+    const { readFile } = await import('node:fs/promises');
     const acc = await getAccount(accountId);
     if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
 
@@ -540,14 +537,12 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
     const result = await openPasswordsExportRowByRow(accountId);
 
     if (progressMsgId) {
-      await editMessage(chatId, progressMsgId, `✅ Gotowe: ${result.count} wpisów`);
+      await editMessage(chatId, progressMsgId, `✅ Gotowe: ${result.count} wpisów — wysyłam plik...`);
     }
 
-    await replyTo(chatId,
-      `✅ Hasła zapisane lokalnie na serwerze:\n\`${result.path}\`\n\n` +
-      `Znaleziono ${result.count} wpisów.\n\n` +
-      `⚠️ Plik zawiera hasła w postaci niezaszyfrowanej. Nie jest wysyłany do Telegrama.`
-    );
+    const buf = await readFile(result.path);
+    await sendDocument(buf, result.filename, `🔐 Google Passwords: ${acc.label} (${result.count} wpisów)`);
+    await replyTo(chatId, `✅ Gotowe — plik wysłany powyżej.`);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
   }
