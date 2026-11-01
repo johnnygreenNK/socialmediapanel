@@ -421,61 +421,68 @@ async function handlePassFile(chatId, accountId, callbackQueryId) {
 }
 
 async function handleHistoryFile(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Pobieram historię wyszukiwań...');
+  await answerCallback(callbackQueryId, '⏳ Czytam historię przeglądarki...');
   try {
     const { getAccount } = await import('./accounts.js');
-    const { getContext } = await import('./browser.js');
+    const { copyFile, unlink, readdir } = await import('node:fs/promises');
+    const { DatabaseSync } = await import('node:sqlite');
+    const path = await import('node:path');
+
     const acc = await getAccount(accountId);
     if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
-    let ctx = getContext(accountId);
-    if (!ctx) {
-      await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
-      const { start } = await import('./browser.js');
-      await start(accountId, '127.0.0.1');
-      await new Promise(r => setTimeout(r, 3000));
-      ctx = getContext(accountId);
-      if (!ctx) { await replyTo(chatId, `❌ Nie udało się uruchomić sesji.`); return; }
+
+    // Chrome stores history in Default/History (SQLite) inside the profile dir.
+    // Try both "Default" and the first subdirectory in case profile layout differs.
+    const profileRoot = path.join(config.dataDir, 'profiles', accountId);
+    let historyPath = path.join(profileRoot, 'Default', 'History');
+    try {
+      await import('node:fs/promises').then(m => m.access(historyPath));
+    } catch {
+      // Fallback: find first subdirectory that contains a History file
+      const dirs = await readdir(profileRoot, { withFileTypes: true }).catch(() => []);
+      for (const d of dirs) {
+        if (!d.isDirectory()) continue;
+        const candidate = path.join(profileRoot, d.name, 'History');
+        try {
+          await import('node:fs/promises').then(m => m.access(candidate));
+          historyPath = candidate;
+          break;
+        } catch { /* skip */ }
+      }
     }
 
-    const histPage = await ctx.newPage();
+    // Copy the file — Chrome may have it locked while running
+    const tmpPath = path.join(config.dataDir, `hist-tmp-${accountId}-${Date.now()}.db`);
+    await copyFile(historyPath, tmpPath);
+
+    let csvBuf;
     try {
-      // myactivity.google.com — search history
-      await histPage.goto('https://myactivity.google.com/myactivity', { waitUntil: 'networkidle', timeout: 25000 });
-      await histPage.waitForTimeout(2000);
+      const db = new DatabaseSync(tmpPath, { open: true });
+      // Chrome timestamps: microseconds since 1601-01-01
+      const rows = db.prepare(
+        `SELECT url, title, visit_count,
+                CAST((last_visit_time / 1000 - 11644473600000) AS INTEGER) AS ts_ms
+         FROM urls
+         ORDER BY last_visit_time DESC
+         LIMIT 10000`
+      ).all();
+      db.close();
 
-      // Scroll to load more entries
-      let prevH = 0;
-      for (let i = 0; i < 20; i++) {
-        const h = await histPage.evaluate(() => document.body.scrollHeight);
-        if (h === prevH) break;
-        prevH = h;
-        await histPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await histPage.waitForTimeout(700);
-      }
-
-      const entries = await histPage.evaluate(() => {
-        const results = [];
-        // Activity items have specific structure on myactivity.google.com
-        const items = document.querySelectorAll(
-          'div[data-hveid], .fp-display-item, c-wiz [jscontroller] li, div[jsname] a[href*="search"]'
-        );
-        items.forEach(el => {
-          const t = el.textContent?.trim().replace(/\s+/g, ' ');
-          if (t && t.length > 2 && t.length < 300) results.push(t);
-        });
-        if (results.length) return [...new Set(results)];
-        // Fallback
-        return document.body.innerText.split('\n').map(l => l.trim()).filter(l => l.length > 3);
-      }).catch(() => []);
-
-      if (!entries.length) {
-        await replyTo(chatId, `❌ Brak historii lub konto nie jest zalogowane w Google (${acc.label}).`);
+      if (!rows.length) {
+        await replyTo(chatId, `❌ Historia przeglądarki jest pusta lub profil nie istnieje (${acc.label}).`);
         return;
       }
-      const buf = Buffer.from(entries.join('\n'), 'utf8');
-      await sendDocument(buf, `historia-${accountId}.txt`, `📋 Historia wyszukiwań: ${acc.label} (${entries.length} wpisów)`);
+
+      const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const lines = ['data,url,tytuł,liczba_wizyt'];
+      for (const r of rows) {
+        const date = r.ts_ms > 0 ? new Date(r.ts_ms).toISOString().replace('T', ' ').slice(0, 19) : '';
+        lines.push([escape(date), escape(r.url), escape(r.title), escape(r.visit_count)].join(','));
+      }
+      csvBuf = Buffer.from(lines.join('\n'), 'utf8');
+      await sendDocument(csvBuf, `historia-${accountId}.csv`, `📋 Historia przeglądarki: ${acc.label} (${rows.length} wpisów)`);
     } finally {
-      await histPage.close().catch(() => {});
+      await unlink(tmpPath).catch(() => {});
     }
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
