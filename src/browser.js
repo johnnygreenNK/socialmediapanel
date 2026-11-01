@@ -1362,9 +1362,12 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         const data = await extractFromDetailPage();
         await dbg(`wyciągnięto — site="${data.site}" user="${data.user}" pw="${data.pw ? '***' : '(puste)'}"`);
 
-        // Navigate back to list (SPA history)
-        await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 })
-          .catch(() => page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }));
+        // Navigate back to list — always goto, not goBack.
+        // goBack lands on the challenge/pwd page which is in the browser history
+        // after passing the first Google re-auth, leaving DOM empty for all
+        // subsequent entries (selector a[href^="password/"] finds nothing).
+        await page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
+          .catch(() => {});
         await page.waitForTimeout(600);
         await dbg(`wróciłem na listę: ${page.url()}`);
 
