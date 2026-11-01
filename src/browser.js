@@ -1256,18 +1256,29 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
 
     for (let i = 0; i < total; i++) {
       try {
-        await dbg(`wpis ${i + 1}/${total} — szukam linka...`);
+        const allLinksNow = await page.locator('a[href^="password/"]').count().catch(() => 0);
+        await dbg(`wpis ${i + 1}/${total} — linki w DOM: ${allLinksNow}`);
         const link = page.locator('a[href^="password/"]').nth(i);
         // After goBack the SPA resets scroll and lazy entries disappear from DOM.
         // Scroll down gradually until this entry appears.
         for (let s = 0; s < 20; s++) {
-          if (await link.count() > 0) break;
+          const cnt = await link.count();
+          await dbg(`scroll próba ${s + 1}: link nth(${i}) count=${cnt}`);
+          if (cnt > 0) break;
           await page.evaluate(() => window.scrollBy(0, 600));
           await page.waitForTimeout(300);
         }
+        const linkCount = await link.count();
+        await dbg(`link nth(${i}) finalnie count=${linkCount}`);
+        if (!linkCount) {
+          await dbg(`❌ link nth(${i}) nie pojawił się — pomijam`);
+          results.push(`wpis-${i + 1} | (pominięty — brak linka w DOM)`);
+          if (onProgress) onProgress(results.length, total);
+          continue;
+        }
         await link.scrollIntoViewIfNeeded().catch(() => {});
         const entryHref = await link.getAttribute('href').catch(() => null);
-        await dbg(`klikam: ${entryHref || '(brak href)'}`);
+        await dbg(`klikam href="${entryHref || '(brak)'}", URL przed: ${page.url()}`);
         await link.click({ timeout: 8000 });
         await page.waitForTimeout(1500);
         await dbg(`po kliknięciu URL: ${page.url()}`);
