@@ -862,6 +862,22 @@ export async function shutdownAll() {
 }
 
 // ── Google Passwords export ───────────────────────────────────────────────────
+
+// Click Dalej/Next — tries several strategies because Google's button
+// text varies by language and the element may be inside a shadow/span.
+async function clickDalej(page) {
+  // 1. getByRole is the most reliable
+  const byRole = page.getByRole('button', { name: /dalej|next/i });
+  if (await byRole.count()) { await byRole.first().click(); return; }
+  // 2. any button whose text content matches
+  const byText = page.locator('button').filter({ hasText: /dalej|next/i });
+  if (await byText.count()) { await byText.first().click(); return; }
+  // 3. last button on page (Google puts submit last)
+  const all = page.locator('button[type="submit"], button.VfPpkd-LgbsSe');
+  if (await all.count()) { await all.last().click(); return; }
+  // 4. fallback
+  await page.keyboard.press('Enter');
+}
 // Stubs kept so server's telegram.js import doesn't break.
 // The real work is done by openPasswordsExport() below.
 export function getPasswordsCache(_accountId) { return null; }
@@ -988,13 +1004,7 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       if (await pwInput.count() && acc2?.password) {
         await pwInput.fill(acc2.password);
         await page.waitForTimeout(300);
-        // Click Dalej/Next button explicitly
-        const dalej = page.locator('button').filter({ hasText: /dalej|next/i }).first();
-        if (await dalej.count()) {
-          await dalej.click();
-        } else {
-          await page.keyboard.press('Enter');
-        }
+        await clickDalej(page);
         await page.waitForTimeout(2500);
         await snap();
       }
@@ -1085,8 +1095,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         const pwInput = page.locator('input[type="password"]').first();
         if (await pwInput.count()) {
           await pwInput.fill(acc.password);
-          const dalej = page.locator('button').filter({ hasText: /dalej|next/i }).first();
-          if (await dalej.count()) { await dalej.click(); } else { await page.keyboard.press('Enter'); }
+          await clickDalej(page);
           await page.waitForTimeout(2000); await snap();
         }
       }
