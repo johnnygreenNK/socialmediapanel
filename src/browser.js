@@ -1121,14 +1121,12 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(500);
 
-    // Collect all password entry hrefs upfront (absolute URLs)
-    const hrefs = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('a[href^="password/"]')).map(a => a.href)
-    );
+    // Count entries on list page — do NOT navigate away per-entry (triggers re-auth).
+    // Instead: click each link in-place (SPA navigation stays in session).
+    const entryCount = await page.locator('a[href^="password/"]').count().catch(() => 0);
+    if (!entryCount) throw new Error('Nie znaleziono żadnych wpisów na stronie (brak linków password/)');
 
-    if (!hrefs.length) throw new Error('Nie znaleziono żadnych wpisów na stronie (brak linków password/)');
-
-    const total = Math.min(hrefs.length, 300);
+    const total = Math.min(entryCount, 300);
     const results = [];
 
     // Extract all inputs from detail page (including shadow DOM), click show first
@@ -1202,19 +1200,25 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
 
     for (let i = 0; i < total; i++) {
       try {
-        await page.goto(hrefs[i], { waitUntil: 'domcontentloaded', timeout: 20000 });
-        await page.waitForTimeout(1200);
+        // Click the ith link inside the SPA — no full HTTP navigation, so no re-auth.
+        // After each goBack() the list page is restored from SPA cache.
+        const link = page.locator('a[href^="password/"]').nth(i);
+        await link.scrollIntoViewIfNeeded().catch(() => {});
+        await link.click({ timeout: 8000 });
+        await page.waitForTimeout(1500);
 
-        // Re-auth: Google may ask for password before showing detail
-        const reAuth = await page.locator('input[type="password"]').count().catch(() => 0);
-        if (reAuth && acc?.password) {
+        // Guard: if Google somehow redirected to auth, try password and wait
+        if (isAuthPage(page.url()) && acc?.password) {
           const pwInp = page.locator('input[type="password"]').first();
-          await pwInp.fill(acc.password);
-          await clickDalej(page);
-          await page.waitForTimeout(2000);
+          if (await pwInp.count()) { await pwInp.fill(acc.password); await clickDalej(page); await page.waitForTimeout(2000); }
         }
 
         const data = await extractFromDetailPage();
+
+        // Navigate back to list (SPA history)
+        await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 })
+          .catch(() => page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }));
+        await page.waitForTimeout(600);
 
         const site = data.site || `wpis-${i + 1}`;
         const user = data.user || '';

