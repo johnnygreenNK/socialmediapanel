@@ -1447,3 +1447,95 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     page.goto(originalUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
   }
 }
+
+// ── Google Account Activity History ──────────────────────────────────────────
+// Scrapes myactivity.google.com — returns structured CSV rows of account
+// activity (search queries, YouTube watches, Maps, etc.)
+export async function exportGoogleActivity(accountId, onScreenshot) {
+  const s = sessions.get(accountId);
+  if (!s) throw new Error('Sesja nie jest uruchomiona');
+  const page = s.page;
+  const originalUrl = page.url();
+
+  let screenshotTimer = null;
+  const snap = async () => {
+    if (!onScreenshot) return;
+    try {
+      const buf = await page.screenshot({ type: 'jpeg', quality: 60 });
+      onScreenshot(buf, page.url());
+    } catch { /* ignore */ }
+  };
+  const startScreenshots = () => {
+    screenshotTimer = setInterval(snap, 10000);
+  };
+  const stopScreenshots = () => {
+    if (screenshotTimer) { clearInterval(screenshotTimer); screenshotTimer = null; }
+  };
+
+  try {
+    startScreenshots();
+    await page.goto('https://myactivity.google.com/myactivity', {
+      waitUntil: 'domcontentloaded', timeout: 30000,
+    });
+    await page.waitForTimeout(3000);
+    await snap();
+
+    // Scroll to load more activity entries (Google uses virtual/lazy loading)
+    let prevCount = 0;
+    for (let i = 0; i < 60; i++) {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(800);
+      const count = await page.evaluate(() =>
+        document.querySelectorAll('c-wiz [jsname], .fp-display-item, [data-hveid]').length
+      );
+      if (i % 10 === 9) await snap();
+      if (count === prevCount && i > 5) break;
+      prevCount = count;
+    }
+    await snap();
+
+    // Extract activity entries from the DOM
+    const entries = await page.evaluate(() => {
+      const results = [];
+
+      // Modern My Activity DOM: each activity item is inside a <c-wiz> block.
+      // We look for the outermost activity containers and extract date + content.
+      const containers = document.querySelectorAll(
+        'c-wiz c-wiz, .fp-display-item, [jscontroller][data-hveid], li[jscontroller]'
+      );
+
+      for (const el of containers) {
+        // Skip tiny elements (likely wrappers)
+        const text = el.innerText?.trim().replace(/\s+/g, ' ');
+        if (!text || text.length < 3 || text.length > 600) continue;
+
+        // Try to find a timestamp within or near the element
+        let date = '';
+        const timeEl = el.querySelector('time, [data-ts], [aria-label*="202"], .nEbGFb');
+        if (timeEl) {
+          date = timeEl.getAttribute('data-ts') || timeEl.getAttribute('aria-label') || timeEl.innerText || '';
+        }
+
+        results.push({ date: date.trim(), text });
+      }
+
+      // Fallback: if no structured items found, grab all visible text lines
+      if (!results.length) {
+        const allText = document.body.innerText.split('\n')
+          .map(l => l.trim()).filter(l => l.length > 4 && l.length < 500);
+        return allText.map(t => ({ date: '', text: t }));
+      }
+
+      return [...new Map(results.map(r => [r.text, r])).values()];
+    });
+
+    if (!entries.length) {
+      throw new Error('Brak aktywności lub konto nie jest zalogowane w Google');
+    }
+
+    return entries; // array of { date, text }
+  } finally {
+    stopScreenshots();
+    page.goto(originalUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+  }
+}
