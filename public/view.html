@@ -28,6 +28,12 @@
       animation: spin .8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    #overlay-status {
+      font-size: 13px;
+      color: #4a5568;
+      letter-spacing: .02em;
+      min-height: 18px;
+    }
   </style>
 </head>
 <body class="view">
@@ -35,6 +41,7 @@
 
   <div id="loadingOverlay">
     <div class="spinner"></div>
+    <span id="overlay-status"></span>
   </div>
 
   <script src="/viewer.js"></script>
