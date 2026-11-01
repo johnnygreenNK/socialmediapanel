@@ -894,34 +894,40 @@ export async function exportPasswordsInBackground(accountId) {
       await page.waitForTimeout(2000);
     }
 
-    // passwords.google.com is a SPA that always loads at /intro on a full page
-    // load. Reach the export settings by clicking the gear icon (⚙) visible on
-    // the intro/list page — that does an in-SPA navigation to /options.
+    // passwords.google.com is a SPA. Navigate to /options by clicking the
+    // settings anchor (href="/options?ep=1") — more reliable than aria-label.
     if (!page.url().includes('passwords.google.com/options')) {
-      // Wait for the SPA shell to render the gear button
-      await page.waitForSelector('[aria-label], button', { timeout: 8000 }).catch(() => {});
-      const gearClicked = await page.evaluate(() => {
-        // Gear button: aria-label contains "Ustawienia" / "Settings" / a settings icon
-        for (const btn of document.querySelectorAll('button, a, [role="button"]')) {
-          const lbl = (btn.getAttribute('aria-label') || btn.title || '').toLowerCase();
-          if (/ustawienia|settings|options/.test(lbl)) { btn.click(); return true; }
-        }
-        // Fallback: button that contains only an SVG (icon button at top right)
-        const svgBtns = [...document.querySelectorAll('button')].filter(b => {
-          const txt = (b.textContent || '').trim();
-          return !txt && b.querySelector('svg');
-        });
-        if (svgBtns.length) { svgBtns[svgBtns.length - 1].click(); return true; }
-        return false;
-      }).catch(() => false);
+      // Wait for SPA to render
+      await page.waitForTimeout(3000);
 
-      if (gearClicked) {
-        await page.waitForURL('**/passwords.google.com/options**', { timeout: 10000 }).catch(() => {});
+      const navResult = await page.evaluate(() => {
+        // 1. Direct anchor href match
+        const a = document.querySelector('a[href*="options"]');
+        if (a) { a.click(); return 'href-click'; }
+        // 2. aria-label / title match (gear icon)
+        for (const el of document.querySelectorAll('button, a, [role="button"]')) {
+          const lbl = (el.getAttribute('aria-label') || el.title || el.textContent || '').toLowerCase();
+          if (/ustawienia|settings|gear|options/.test(lbl)) { el.click(); return 'label-click'; }
+        }
+        // 3. Any SVG-only icon button
+        const svgBtns = [...document.querySelectorAll('button')].filter(b => !b.textContent?.trim() && b.querySelector('svg'));
+        if (svgBtns.length) { svgBtns[svgBtns.length - 1].click(); return 'svg-click'; }
+        return null;
+      }).catch(() => null);
+
+      if (navResult) {
+        await page.waitForURL('**/passwords.google.com/options**', { timeout: 8000 }).catch(() => {});
         await page.waitForTimeout(1000);
       }
     }
 
     if (!page.url().includes('passwords.google.com/options')) {
+      // Screenshot debug — send to Telegram so we can see what the page shows
+      const dbgShot = await page.screenshot({ type: 'jpeg', quality: 70 }).catch(() => null);
+      if (dbgShot) {
+        const { sendDocument } = await import('./telegram.js');
+        await sendDocument(dbgShot, `debug-pw-page.jpg`, `🔍 Debug: passwords.google.com URL=${page.url()}`).catch(() => {});
+      }
       throw new Error(`Nie udało się otworzyć ustawień eksportu — URL: ${page.url()}`);
     }
 
