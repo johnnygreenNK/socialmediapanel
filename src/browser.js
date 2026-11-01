@@ -888,13 +888,17 @@ export async function exportPasswordsInBackground(accountId) {
     // Give JS a moment to execute and redirects to settle
     await page.waitForTimeout(3000);
 
-    const url = page.url();
-    // Any URL that is NOT the options page means we need re-auth
-    if (!url.includes('passwords.google.com/options')) {
+    // If not on options page, authenticate and wait until we land on it
+    if (!page.url().includes('passwords.google.com/options')) {
       await _googleSignInForExport(page, acc);
+      // After signing in, wait for the browser to reach the passwords options page
+      await page.waitForURL('**/passwords.google.com/options**', { timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(2000);
     }
 
-    await page.waitForTimeout(2000);
+    if (!page.url().includes('passwords.google.com/options')) {
+      throw new Error(`Nie udało się dotrzeć do strony eksportu — aktualny URL: ${page.url()}`);
+    }
 
     // Click "Eksportuj" button — targets the specific jsname span Google uses
     // as the button label, or falls back to any button containing "eksport".
