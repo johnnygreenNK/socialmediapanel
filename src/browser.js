@@ -1069,20 +1069,36 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     } catch { /* ignore */ }
   };
 
-  try {
-    // ERR_HTTP_RESPONSE_CODE_FAILURE = Playwright throws on 4xx/5xx but the page may still load.
-    // Catch it and inspect the URL — if it's usable (auth page or passwords), continue.
-    await page.goto('https://passwords.google.com/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    }).catch(err => {
-      if (!err.message.includes('ERR_HTTP_RESPONSE_CODE_FAILURE') &&
-          !err.message.includes('net::ERR_')) throw err;
-      // page may still have landed somewhere useful — check below
+  const gotoTolerant = async (url) => {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(err => {
+      if (!err.message.includes('ERR_') && !err.message.includes('net::')) throw err;
     });
-    const landedUrl = page.url();
-    if (landedUrl.startsWith('chrome-error://') || landedUrl.startsWith('chrome://') || landedUrl === 'about:blank') {
-      throw new Error(`Nie można otworzyć passwords.google.com — błąd sieci (${landedUrl}). Sprawdź proxy i sesję.`);
+  };
+
+  const isChromiumError = (u) => u.startsWith('chrome-error://') || u.startsWith('chrome://') || u === 'about:blank';
+
+  try {
+    await gotoTolerant('https://passwords.google.com/');
+    if (isChromiumError(page.url())) {
+      // Proxy/network issue — diagnose by trying google.com first
+      await gotoTolerant('https://www.google.com/');
+      if (isChromiumError(page.url())) {
+        throw new Error('Brak połączenia z Google — sprawdź proxy konta. chrome-error na google.com.');
+      }
+      // google.com reachable — try passwords via myaccount as an alternative route
+      await gotoTolerant('https://myaccount.google.com/security');
+      await page.waitForTimeout(2000);
+      // find Password Manager link and click it
+      const pmLink = page.locator('a[href*="passwords.google.com"], a[href*="password"]').filter({ hasText: /password/i }).first();
+      if (await pmLink.count()) {
+        await pmLink.click();
+        await page.waitForTimeout(2000);
+      } else {
+        await gotoTolerant('https://passwords.google.com/');
+      }
+      if (isChromiumError(page.url())) {
+        throw new Error('passwords.google.com niedostępny przez proxy konta. Sprawdź proxy lub usuń je z konta.');
+      }
     }
     await snap();
     startScreenshots();
