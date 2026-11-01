@@ -894,11 +894,13 @@ export async function exportPasswordsInBackground(accountId) {
       await page.waitForTimeout(2000);
     }
 
-    // Now navigate to options from within the passwords.google.com domain
-    // (a same-site hop is less likely to trigger redirect loops than coming from accounts.google.com)
+    // Navigate to options. passwords.google.com is a SPA — it loads intro first,
+    // then JS does a client-side navigation to /options. We wait for the URL change.
     if (!page.url().includes('passwords.google.com/options')) {
       await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(3000);
+      // Give SPA time to do its internal navigation
+      await page.waitForURL('**/passwords.google.com/options**', { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(1500);
     }
 
     if (!page.url().includes('passwords.google.com/options')) {
