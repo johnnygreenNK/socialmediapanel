@@ -924,6 +924,16 @@ export async function openPasswordsExport(accountId, onScreenshot) {
     if (isAuthPage(page.url())) {
       const acc = await (await import('./accounts.js')).getAccount(accountId);
 
+      // /intro page only has a "Sign in" button — click it to reach the login form
+      if (page.url().includes('/intro')) {
+        const signInBtn = page.locator('button, a').filter({ hasText: /sign in/i }).first();
+        if (await signInBtn.count()) {
+          await signInBtn.click();
+          await page.waitForTimeout(2000);
+          await snap();
+        }
+      }
+
       if (acc?.email) {
         // Fill email
         await page.waitForSelector('input[type="email"], input[name="identifier"]', { timeout: 10000 }).catch(() => {});
