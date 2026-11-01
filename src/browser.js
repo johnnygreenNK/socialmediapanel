@@ -1133,11 +1133,29 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         }
       }
       if (isAuthPage(page.url())) {
-        await page.waitForURL(
-          (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
-          { timeout: 5 * 60 * 1000 }
-        );
-        await snap();
+        // Still on auth — try password once more (covers /challenge/pwd variant)
+        const pwInput2 = page.locator('input[type="password"]').first();
+        if (await pwInput2.count() && acc?.password) {
+          await pwInput2.fill(acc.password);
+          await clickDalej(page);
+          await page.waitForTimeout(2000);
+        }
+        if (isAuthPage(page.url())) {
+          // Stop the spam — send one notification and pause screenshots
+          stopScreenshots();
+          await snap();
+          await telegram.sendMessage(
+            `🔐 [${accountId}] Google wymaga weryfikacji przy eksporcie haseł.\n` +
+            `Wpisz hasło lub potwierdź 2FA w przeglądarce.\n` +
+            `Bot czeka 4 minuty.`
+          );
+          await page.waitForURL(
+            (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
+            { timeout: 4 * 60 * 1000 }
+          );
+          startScreenshots();
+          await snap();
+        }
       }
     }
 
