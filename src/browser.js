@@ -881,55 +881,45 @@ export async function exportPasswordsInBackground(accountId) {
 
   const page = await s.context.newPage();
   try {
-    // Navigate to passwords.google.com export options
-    await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'load', timeout: 30000 });
-    await page.waitForTimeout(2000);
+    // Navigate to passwords.google.com export options.
+    // Use 'domcontentloaded' — 'load' waits for all JS/images which can
+    // hang on Google's password manager if any resource times out.
+    await page.goto('https://passwords.google.com/options?ep=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Give JS a moment to execute and redirects to settle
+    await page.waitForTimeout(3000);
 
     const url = page.url();
-    // If not on options page — need re-auth
-    if (!url.includes('passwords.google.com/options') && !url.includes('passwords.google.com/intro')) {
-      // Google redirected us to sign-in
-      await _googleSignInForExport(page, acc);
-    } else if (url.includes('/intro') || url.includes('accounts.google.com')) {
+    // Any URL that is NOT the options page means we need re-auth
+    if (!url.includes('passwords.google.com/options')) {
       await _googleSignInForExport(page, acc);
     }
 
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2000);
 
-    // Find and click Export button
-    const exported = await page.evaluate(() => {
-      function findClick(root) {
-        if (!root) return false;
-        for (const el of root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : []) {
-          const lbl = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
-          if (/export|eksport/.test(lbl)) { el.click(); return true; }
+    // Click "Eksportuj" button — targets the specific jsname span Google uses
+    // as the button label, or falls back to any button containing "eksport".
+    const clickExport = () => page.evaluate(() => {
+      // Primary: button containing a span[jsname="V67aGc"] with "Eksportuj"
+      const spans = document.querySelectorAll('[jsname="V67aGc"]');
+      for (const s of spans) {
+        if (/eksport/i.test(s.textContent || '')) {
+          const btn = s.closest('button') || s.closest('[role="button"]');
+          if (btn) { btn.click(); return true; }
         }
-        for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
-          if (el.shadowRoot && findClick(el.shadowRoot)) return true;
-        }
-        return false;
       }
-      return findClick(document.body);
-    }).catch(() => false);
+      // Fallback: any button whose text contains "eksport"
+      for (const btn of document.querySelectorAll('button, [role="button"]')) {
+        if (/eksport/i.test(btn.textContent || '')) { btn.click(); return true; }
+      }
+      return false;
+    });
 
+    const exported = await clickExport().catch(() => false);
     if (!exported) throw new Error(`export button not found on ${page.url()}`);
 
-    // Confirmation dialog — click export again
-    await page.waitForTimeout(800);
-    await page.evaluate(() => {
-      function findClick(root) {
-        if (!root) return false;
-        for (const el of root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : []) {
-          const lbl = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
-          if (/export|eksport/.test(lbl)) { el.click(); return true; }
-        }
-        for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
-          if (el.shadowRoot && findClick(el.shadowRoot)) return true;
-        }
-        return false;
-      }
-      findClick(document.body);
-    }).catch(() => {});
+    // Confirmation dialog — click "Eksportuj" again
+    await page.waitForTimeout(1200);
+    await clickExport().catch(() => {});
 
     // Wait for CSV download
     const download = await page.waitForEvent('download', { timeout: 40000 });
@@ -971,7 +961,7 @@ async function _googleSignInForExport(page, acc) {
   if (!acc.email || !acc.password) throw new Error('Brak danych logowania dla konta (email/password)');
   await page.goto(
     `https://accounts.google.com/v3/signin/identifier?continue=${encodeURIComponent('https://passwords.google.com/options?ep=1')}&flowName=GlifWebSignIn`,
-    { waitUntil: 'load', timeout: 30000 }
+    { waitUntil: 'domcontentloaded', timeout: 30000 }
   );
   await page.waitForTimeout(2000);
 
@@ -988,13 +978,14 @@ async function _googleSignInForExport(page, acc) {
     await page.waitForTimeout(2500);
   }
 
-  // Password field — wait for real visibility
+  // Password field — Google uses name="Passwd" with tabindex="0"
   await page.waitForFunction(() => {
-    const inputs = document.querySelectorAll('input[type="password"]');
-    return [...inputs].some(i => i.offsetParent !== null);
+    const inp = document.querySelector('input[name="Passwd"]') || document.querySelector('input[type="password"]');
+    return inp && inp.offsetParent !== null;
   }, { timeout: 15000 }).catch(() => {});
 
-  const pwInp = await page.$('input[type="password"]:not([tabindex="-1"])').catch(() => null)
+  const pwInp = await page.$('input[name="Passwd"]').catch(() => null)
+             || await page.$('input[type="password"][tabindex="0"]').catch(() => null)
              || await page.$('input[type="password"]').catch(() => null);
   if (pwInp) {
     await pwInp.click({ force: true }).catch(() => {});
