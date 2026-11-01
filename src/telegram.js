@@ -490,11 +490,15 @@ async function handleGpwCsv(chatId, accountId, callbackQueryId) {
 
     await replyTo(chatId,
       `📥 Otwieram passwords.google.com/options w przeglądarce "${acc.label}".\n\n` +
-      `Zaloguj się (jeśli wymagane) i kliknij przycisk *Eksportuj hasła*.\n\n` +
-      `Bot wyśle plik CSV gdy tylko go pobierze (max 5 min).`
+      `Zaloguj się (jeśli wymagane) i kliknij *Eksportuj hasła*.\n\n` +
+      `Bot wysyła screeny co 10 sek żebyś wiedział co się dzieje.`
     );
 
-    const result = await openPasswordsExport(accountId);
+    const onScreenshot = (buf, url) => {
+      sendDocument(buf, `screen-${accountId}.jpg`, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
+    };
+
+    const result = await openPasswordsExport(accountId, onScreenshot);
 
     const buf = await readFile(result.path);
     await sendDocument(buf, result.filename, `🔐 Google Passwords: ${acc.label}`);

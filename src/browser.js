@@ -875,38 +875,54 @@ export async function exportPasswordsInBackground(_accountId) {
 // Open Google Password Manager in a new tab and wait for the user to
 // authenticate (if needed) and click Export themselves.
 // Returns { filename, path } when the download completes, throws on timeout/error.
-export async function openPasswordsExport(accountId) {
+export async function openPasswordsExport(accountId, onScreenshot) {
   const s = sessions.get(accountId);
   if (!s) throw new Error('Sesja nie jest uruchomiona');
 
   const page = await s.context.newPage();
+
+  // Periodic screenshot loop — fires every 10s while waiting for download
+  let screenshotTimer = null;
+  const startScreenshots = () => {
+    screenshotTimer = setInterval(async () => {
+      try {
+        const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 8000 });
+        if (onScreenshot && buf) onScreenshot(buf, page.url());
+      } catch { /* page may close */ }
+    }, 10000);
+  };
+  const stopScreenshots = () => {
+    if (screenshotTimer) { clearInterval(screenshotTimer); screenshotTimer = null; }
+  };
+
   try {
-    // OPENING_GOOGLE_PASSWORD_MANAGER
     await page.goto('https://passwords.google.com/options?ep=1', {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
 
-    // Detect immediate proxy/network failure
     if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
       throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci (ERR_TUNNEL_CONNECTION_FAILED).');
     }
 
-    // WAITING_FOR_USER_AUTHENTICATION + WAITING_FOR_USER_EXPORT_CONFIRMATION
-    // The user sees the page via the viewer and acts themselves.
-    // We just wait for the browser to fire a download event.
-    // Timeout: 5 minutes — enough for the user to log in and click Export.
-    const download = await page.waitForEvent('download', { timeout: 5 * 60 * 1000 });
+    // Take first screenshot immediately so user sees what's on screen
+    try {
+      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 8000 });
+      if (onScreenshot && buf) onScreenshot(buf, page.url());
+    } catch { /* ignore */ }
 
-    // WAITING_FOR_LOCAL_DOWNLOAD
+    startScreenshots();
+
+    const download = await page.waitForEvent('download', { timeout: 5 * 60 * 1000 });
+    stopScreenshots();
+
     const suggestedName = download.suggestedFilename() || `passwords-${accountId}.csv`;
     const savePath = path.join(config.dataDir, suggestedName);
     await download.saveAs(savePath);
 
-    // COMPLETED
     return { filename: suggestedName, path: savePath };
   } finally {
-    // Always close the export tab when done (success or error)
+    stopScreenshots();
     await page.close().catch(() => {});
   }
 }
