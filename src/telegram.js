@@ -532,13 +532,22 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
       const r = await fetch(apiUrl('sendMessage'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: `🔐 Klikam hasła w Google — to może potrwać kilka minut...` }),
+        body: JSON.stringify({ chat_id: chatId, text: `🔐 Otwieram passwords.google.com — screeny co 10 sek...` }),
       });
       const d = await r.json();
       progressMsgId = d.result?.message_id;
     } catch {}
 
-    const result = await openPasswordsExportRowByRow(accountId);
+    const onScreenshot = (buf, url) => {
+      sendDocument(buf, `screen-${accountId}.jpg`, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
+    };
+    const onProgress = (done, total) => {
+      if (progressMsgId && done % 10 === 0) {
+        editMessage(chatId, progressMsgId, `🔐 Pobieram hasła: ${done} / ${total}`).catch(() => {});
+      }
+    };
+
+    const result = await openPasswordsExportRowByRow(accountId, onScreenshot, onProgress);
 
     if (progressMsgId) {
       await editMessage(chatId, progressMsgId, `✅ Gotowe: ${result.count} wpisów — wysyłam plik...`);

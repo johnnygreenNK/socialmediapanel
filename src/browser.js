@@ -1031,15 +1031,30 @@ export async function openPasswordsExport(accountId, onScreenshot) {
   }
 }
 
-// Open Google Password Manager and click through each password row to reveal
-// passwords one by one. Returns { path } with a local .txt file (one line per
-// entry: "site | user | password"). File stays local — never sent to Telegram.
-// The user must already be signed in; this function does NOT automate auth.
-export async function openPasswordsExportRowByRow(accountId) {
+export async function openPasswordsExportRowByRow(accountId, onScreenshot, onProgress) {
   const s = sessions.get(accountId);
   if (!s) throw new Error('Sesja nie jest uruchomiona');
 
-  const page = await s.context.newPage();
+  const page = s.page;
+  const originalUrl = page.url();
+
+  let screenshotTimer = null;
+  const startScreenshots = () => {
+    screenshotTimer = setInterval(async () => {
+      try {
+        const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 8000 });
+        if (onScreenshot && buf) onScreenshot(buf, page.url());
+      } catch { /* ignore */ }
+    }, 10000);
+  };
+  const stopScreenshots = () => { if (screenshotTimer) { clearInterval(screenshotTimer); screenshotTimer = null; } };
+  const snap = async () => {
+    try {
+      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 8000 });
+      if (onScreenshot && buf) onScreenshot(buf, page.url());
+    } catch { /* ignore */ }
+  };
+
   try {
     await page.goto('https://passwords.google.com/', {
       waitUntil: 'domcontentloaded',
@@ -1048,6 +1063,43 @@ export async function openPasswordsExportRowByRow(accountId) {
     if (page.url().startsWith('chrome-error://') || page.url().startsWith('chrome://')) {
       throw new Error('Nie można otworzyć passwords.google.com — błąd proxy/sieci.');
     }
+    await snap();
+    startScreenshots();
+
+    // Auth handling — same as CSV export
+    const acc = await (await import('./accounts.js')).getAccount(accountId);
+    const isAuthPage = (u) => u.includes('/intro') || u.includes('accounts.google.com') || u.includes('/signin');
+
+    if (isAuthPage(page.url())) {
+      if (page.url().includes('/intro')) {
+        const signInBtn = page.locator('button, a').filter({ hasText: /sign in/i }).first();
+        if (await signInBtn.count()) { await signInBtn.click(); await page.waitForTimeout(2000); await snap(); }
+      }
+      if (acc?.email) {
+        await page.waitForSelector('input[type="email"], input[name="identifier"]', { timeout: 10000 }).catch(() => {});
+        const emailInput = page.locator('input[type="email"], input[name="identifier"]').first();
+        if (await emailInput.count()) { await emailInput.fill(acc.email); await page.keyboard.press('Enter'); await page.waitForTimeout(2000); await snap(); }
+      }
+      if (acc?.password) {
+        await page.waitForSelector('input[type="password"]', { timeout: 10000 }).catch(() => {});
+        const pwInput = page.locator('input[type="password"]').first();
+        if (await pwInput.count()) {
+          await pwInput.fill(acc.password);
+          const dalej = page.locator('button').filter({ hasText: /dalej|next/i }).first();
+          if (await dalej.count()) { await dalej.click(); } else { await page.keyboard.press('Enter'); }
+          await page.waitForTimeout(2000); await snap();
+        }
+      }
+      // Wait for 2FA or other challenge (up to 5 min)
+      if (isAuthPage(page.url())) {
+        await page.waitForURL(
+          (url) => { const h = url.href; return !h.includes('/intro') && !h.includes('accounts.google.com') && !h.includes('/signin'); },
+          { timeout: 5 * 60 * 1000 }
+        );
+        await snap();
+      }
+    }
+
     await page.waitForTimeout(2500);
 
     // Scroll to force lazy-load all entries
@@ -1081,7 +1133,6 @@ export async function openPasswordsExportRowByRow(accountId) {
     const count = await rows.count().catch(() => 0);
     const limit = Math.min(count || 0, 200);
 
-    const acc = await (await import('./accounts.js')).getAccount(accountId);
     const results = [];
 
     for (let i = 0; i < limit; i++) {
@@ -1147,6 +1198,7 @@ export async function openPasswordsExportRowByRow(accountId) {
         const user = lines[1] || '';
         const pw = pwValue && !pwValue.includes(MASK) ? pwValue : '(nie udało się)';
         results.push(`${site} | ${user} | ${pw}`);
+        if (onProgress) onProgress(results.length, limit);
 
         // Close detail
         await page.evaluate(() => {
@@ -1173,6 +1225,7 @@ export async function openPasswordsExportRowByRow(accountId) {
     await fsp.writeFile(savePath, results.join('\n'), 'utf8');
     return { filename, path: savePath, count: results.length };
   } finally {
-    await page.close().catch(() => {});
+    stopScreenshots();
+    page.goto(originalUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
   }
 }
