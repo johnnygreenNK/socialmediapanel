@@ -27,7 +27,7 @@ else {
   function connect() {
     viewer.onclose = (ev) => {
       if (_ready) return;
-      if (ev.code === 4409 && _retries < 20) {
+      if (ev.code === 4409 && _retries < 30) {
         _retries++;
         setOverlayText(`Uruchamiam przeglądarkę… (${_retries})`);
         setTimeout(connect, 2000);
