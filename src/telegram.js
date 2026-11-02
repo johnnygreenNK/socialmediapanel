@@ -590,13 +590,10 @@ async function handleGoogleActivity(chatId, accountId, callbackQueryId) {
       await new Promise(r => setTimeout(r, 3000));
     }
 
-    await replyTo(chatId,
-      `🔍 Fetching Google activity for *${acc.label}*.\nScrolling myactivity.google.com — may take 1–2 min. Screenshots every 10s.`
-    );
+    await replyTo(chatId, `🔍 Scraping Google activity for *${acc.label}* — please wait...`);
 
     const { exportGoogleActivity } = await import('./browser.js');
-    const onScreenshot = (buf, url) => sendPhoto(buf, `📷 ${acc.label} — ${url.slice(0, 80)}`).catch(() => {});
-    const entries = await exportGoogleActivity(accountId, onScreenshot);
+    const entries = await exportGoogleActivity(accountId, null);
 
     const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const lines = ['date,activity'];
