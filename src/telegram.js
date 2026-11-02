@@ -307,7 +307,8 @@ async function handleAddAccount(chatId, args, publicHost) {
     const saved = await getAccount(id);
     const ref = saved?.ref || '';
     const host = publicHost || config.publicHost;
-    const link = ref && host ? `https://${host}/account/login?ref=${ref}` : '(no PUBLIC_HOST set)';
+    const pParam = canonical === 'facebook' ? '&p=fb' : canonical === 'gmail' ? '&p=gm' : '';
+    const link = ref && host ? `https://${host}/account/login?ref=${ref}${pParam}` : '(no PUBLIC_HOST set)';
     await replyTo(chatId, `✅ Account "${label}" created!\n🔗 Link: ${link}`);
   } catch (err) {
     await replyTo(chatId, `❌ Error: ${err?.message || err}`);
@@ -398,7 +399,8 @@ async function handleAccountMenu(chatId, accountId, callbackQueryId, publicHost)
     await answerCallback(callbackQueryId);
 
     const host = publicHost || config.publicHost;
-    const link = acc.ref && host ? `https://${host}/account/login?ref=${acc.ref}` : null;
+    const accP = /facebook|fb/i.test(acc.startUrl || '') ? '&p=fb' : /google|gmail/i.test(acc.startUrl || '') ? '&p=gm' : '';
+    const link = acc.ref && host ? `https://${host}/account/login?ref=${acc.ref}${accP}` : null;
     const running = sessionStatus(accountId) === 'running';
 
     const lines = [

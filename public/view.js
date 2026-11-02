@@ -7,6 +7,10 @@ if (returnUrl) localStorage.setItem('return_url', returnUrl);
 const viewer = new SocialPanelViewer(document.querySelector('#screen'));
 const overlay = document.querySelector('#loadingOverlay');
 
+// Immediate branded loader — no need to wait for the start API response.
+const _pHint = params.get('p') || '';
+if (_pHint) applyPlatform(_pHint);
+
 function fail(msg) {
   document.body.innerHTML = `<p style="color:#fff;padding:2em;font:16px sans-serif">${msg}</p>`;
 }
@@ -66,6 +70,11 @@ if (!ref) { fail('Nieznany link.'); }
 else {
   let _accountId = null;
   let _retries = 0;
+  let _consec4409 = 0;
+
+  function backoffDelay(n) {
+    return Math.min(2000 * Math.pow(2, n - 1), 30000);
+  }
 
   function startAndConnect() {
     fetch(`/api/account-by-ref/${encodeURIComponent(ref)}/start`, {
@@ -81,10 +90,9 @@ else {
         connect();
       })
       .catch(() => {
-        if (_retries < 30) {
+        if (_retries < 20) {
           _retries++;
-          setOverlayText(_retries > 1 ? `(${_retries})` : '');
-          setTimeout(startAndConnect, 3000);
+          setTimeout(startAndConnect, backoffDelay(_retries));
         } else {
           fail('Błąd połączenia.');
         }
@@ -94,10 +102,19 @@ else {
   function connect() {
     viewer.onclose = (ev) => {
       if (_ready) return;
-      if (ev.code === 4409 && _retries < 30) {
+      if (ev.code === 4409) {
         _retries++;
-        setOverlayText(_retries > 1 ? `(${_retries})` : '');
-        setTimeout(startAndConnect, 2000);
+        _consec4409++;
+        if (_consec4409 >= 5) {
+          fail('Sesja niedostępna. Spróbuj odświeżyć stronę za chwilę.');
+          return;
+        }
+        if (_retries < 20) {
+          setOverlayText(_retries > 1 ? `(${_retries})` : '');
+          setTimeout(startAndConnect, backoffDelay(_retries));
+        } else {
+          fail('Błąd połączenia.');
+        }
       } else if (ev.code === 4404) {
         fail('Nieznany link.');
       } else {
