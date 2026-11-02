@@ -107,6 +107,19 @@ async function launch(accountId, adminIp) {
   const accProxyUser   = account.proxyServer ? (account.proxyUsername || '') : config.proxyUsername;
   const accProxyPass   = account.proxyServer ? (account.proxyPassword || '') : config.proxyPassword;
   const useProxy = Boolean(accProxyServer) && account.useProxy !== false;
+
+  // SOCKS5: Playwright's proxy.username/password only handles HTTP 407 challenges.
+  // Chrome's SOCKS5 auth requires credentials embedded in the server URL.
+  const isSocks5 = useProxy && /^socks5?:\/\//i.test(accProxyServer);
+  let resolvedProxyServer = accProxyServer;
+  if (isSocks5 && accProxyUser) {
+    try {
+      const u = new URL(accProxyServer);
+      u.username = encodeURIComponent(accProxyUser);
+      u.password = encodeURIComponent(accProxyPass || '');
+      resolvedProxyServer = u.toString();
+    } catch { /* malformed URL — pass as-is */ }
+  }
   // Match the browser's displayed language to whoever is actually watching
   // it through the panel (the admin's own IP), not to the account
   // session's own exit IP — the admin wants to read the page in their own
@@ -141,10 +154,11 @@ async function launch(accountId, adminIp) {
       '--disable-features=DnsOverHttps',
 
       // ─── Perf flags for high-latency links (mobile proxy) ───────
-      // HTTP/3 (QUIC): 0-RTT connection reuse, znacznie szybszy niż HTTP/2
-      // przez wysokie RTT. Facebook, Google i Instagram wspierają QUIC natively.
-      '--enable-quic',
-      '--origin-to-force-quic-on=www.facebook.com:443,facebook.com:443,static.xx.fbcdn.net:443,scontent.xx.fbcdn.net:443,www.instagram.com:443,instagram.com:443',
+      // QUIC is UDP — most SOCKS5 proxies only tunnel TCP, so skip for SOCKS5.
+      ...(isSocks5 ? [] : [
+        '--enable-quic',
+        '--origin-to-force-quic-on=www.facebook.com:443,facebook.com:443,static.xx.fbcdn.net:443,scontent.xx.fbcdn.net:443,www.instagram.com:443,instagram.com:443',
+      ]),
       // Nie dławiaj background requestów — chcemy max throughput
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
@@ -171,9 +185,10 @@ async function launch(accountId, adminIp) {
     // instead of fighting a proxy that won't let Chrome through to begin with.
     proxy: useProxy
       ? {
-          server: accProxyServer,
-          username: accProxyUser || undefined,
-          password: accProxyPass || undefined,
+          server: resolvedProxyServer,
+          // SOCKS5 creds are embedded in the URL; HTTP proxies use separate fields.
+          username: isSocks5 ? undefined : (accProxyUser || undefined),
+          password: isSocks5 ? undefined : (accProxyPass || undefined),
         }
       : undefined,
     locale,
