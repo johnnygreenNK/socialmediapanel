@@ -1477,53 +1477,75 @@ export async function exportGoogleActivity(accountId, onScreenshot) {
     await page.waitForTimeout(3000);
     await snap();
 
-    // Scroll to load more activity entries (Google uses virtual/lazy loading)
+    // Scroll until no new items load for 5 consecutive scrolls (or 400 scrolls max).
+    // Google lazy-loads activity items as you scroll.
+    const countItems = () => page.evaluate(() => {
+      // Count anchor tags that link to activity detail pages — stable across DOM versions
+      const byHref = document.querySelectorAll('a[href*="myactivity.google.com"], a[href*="youtube.com/watch"], a[href*="google.com/search"]').length;
+      // Also count items by innerText presence of common prefixes
+      const byText = [...document.querySelectorAll('div, li')].filter(el =>
+        /^(Obejrzano|Wyszukano|Odwiedzono|Watched|Searched|Visited):/i.test(el.innerText?.trim() || '')
+      ).length;
+      return Math.max(byHref, byText, document.querySelectorAll('[data-hveid]').length);
+    });
+
+    let staleStreak = 0;
     let prevCount = 0;
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 400; i++) {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      await page.waitForTimeout(800);
-      const count = await page.evaluate(() =>
-        document.querySelectorAll('c-wiz [jsname], .fp-display-item, [data-hveid]').length
-      );
-      if (i % 10 === 9) await snap();
-      if (count === prevCount && i > 5) break;
+      await page.waitForTimeout(600);
+      const count = await countItems();
+      if (i % 15 === 14) await snap();
+      if (count === prevCount) {
+        staleStreak++;
+        if (staleStreak >= 5) break;
+      } else {
+        staleStreak = 0;
+      }
       prevCount = count;
     }
     await snap();
 
-    // Extract activity entries from the DOM
+    // Extract all activity items. Strategy: grab lines that start with a known
+    // activity prefix ("Obejrzano:", "Wyszukano:", etc.) plus the following lines
+    // (channel/source + timestamp) as one record.
     const entries = await page.evaluate(() => {
+      const PREFIXES = /^(Obejrzano|Wyszukano|Odwiedzono|Watched|Searched|Visited|Odsłuchano|Listened|Użyto|Used):/i;
       const results = [];
+      const seen = new Set();
 
-      // Modern My Activity DOM: each activity item is inside a <c-wiz> block.
-      // We look for the outermost activity containers and extract date + content.
-      const containers = document.querySelectorAll(
-        'c-wiz c-wiz, .fp-display-item, [jscontroller][data-hveid], li[jscontroller]'
-      );
+      // Walk all text nodes grouped by visible block
+      const allEls = [...document.querySelectorAll('div[jsname], li[jsname], [data-hveid], c-wiz div')];
 
-      for (const el of containers) {
-        // Skip tiny elements (likely wrappers)
-        const text = el.innerText?.trim().replace(/\s+/g, ' ');
-        if (!text || text.length < 3 || text.length > 600) continue;
+      for (const el of allEls) {
+        const rawText = el.innerText?.trim().replace(/\s+/g, ' ') || '';
+        if (!rawText || rawText.length < 5 || rawText.length > 800) continue;
 
-        // Try to find a timestamp within or near the element
-        let date = '';
-        const timeEl = el.querySelector('time, [data-ts], [aria-label*="202"], .nEbGFb');
-        if (timeEl) {
-          date = timeEl.getAttribute('data-ts') || timeEl.getAttribute('aria-label') || timeEl.innerText || '';
-        }
+        // Prefer elements whose text starts with an action prefix
+        if (!PREFIXES.test(rawText) && !rawText.includes('youtube.com') && !rawText.includes('google.com')) continue;
 
-        results.push({ date: date.trim(), text });
+        if (seen.has(rawText)) continue;
+        seen.add(rawText);
+
+        // Extract timestamp — look for patterns like "20:52 • Szczegóły" or "1 lis 2024"
+        const tsMatch = rawText.match(/\b(\d{1,2}:\d{2}|\d{1,2}\s+\w{3}\s+\d{4}|\w{3}\s+\d{1,2},\s+\d{4})\b/);
+        const date = tsMatch ? tsMatch[0] : '';
+
+        // Strip the timestamp line from text for cleaner output
+        const text = rawText.replace(/\s*[•·]\s*Szczegóły.*$/i, '').trim();
+        if (text.length < 5) continue;
+
+        results.push({ date, text });
       }
 
-      // Fallback: if no structured items found, grab all visible text lines
-      if (!results.length) {
-        const allText = document.body.innerText.split('\n')
-          .map(l => l.trim()).filter(l => l.length > 4 && l.length < 500);
-        return allText.map(t => ({ date: '', text: t }));
+      // Fallback: just dump all body text lines
+      if (results.length < 10) {
+        return document.body.innerText.split('\n')
+          .map(l => l.trim()).filter(l => l.length > 5 && l.length < 500)
+          .map(t => ({ date: '', text: t }));
       }
 
-      return [...new Map(results.map(r => [r.text, r])).values()];
+      return results;
     });
 
     if (!entries.length) {
