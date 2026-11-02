@@ -298,7 +298,11 @@ async function handleAddAccount(chatId, args, publicHost) {
     const { start, stop, wipeProfile } = await import('./browser.js');
     const existed = Boolean(await getAccount(id));
     if (!existed) { await stop(id).catch(() => {}); await wipeProfile(id); }
-    await saveAccount({ id, label, startUrl });
+    const { config } = await import('./config.js');
+    const proxyFields = (canonical === 'facebook' || canonical === 'gmail') && config.proxyServer
+      ? { proxyServer: config.proxyServer, proxyUsername: config.proxyUsername, proxyPassword: config.proxyPassword }
+      : {};
+    await saveAccount({ id, label, startUrl, ...proxyFields });
     await start(id, '127.0.0.1').catch(() => {});
     const saved = await getAccount(id);
     const ref = saved?.ref || '';
