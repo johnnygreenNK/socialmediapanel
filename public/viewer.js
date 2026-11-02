@@ -27,12 +27,18 @@ class SocialPanelViewer {
 
     ws.binaryType = 'arraybuffer';
 
+    // If no frame arrives within 10s, close and trigger retry in view.js
+    this._noFrameTimer = setTimeout(() => {
+      if (!this._frameCount) try { ws.close(4409, 'no_frames'); } catch {}
+    }, 10000);
+
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.t === 'frame') this._drawFrame(msg.data);
+      if (msg.t === 'redirect' && msg.url) { if (this.onredirect) this.onredirect(msg.url); }
     };
-    ws.onclose = (ev) => { if (this.onclose) this.onclose(ev); };
+    ws.onclose = (ev) => { clearTimeout(this._noFrameTimer); if (this.onclose) this.onclose(ev); };
     ws.onopen  = () => { this._attachInput(); this._sendSize(); if (this.onopen) this.onopen(); };
   }
 
@@ -87,6 +93,7 @@ class SocialPanelViewer {
 
   disconnect() {
     this._detachInput();
+    clearTimeout(this._noFrameTimer);
     if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
   }

