@@ -49,9 +49,10 @@ export default async function viewerRoutes(app) {
 
     let cdp = await browser.newCdpSession(resolvedId).catch(() => null);
     if (!cdp) {
-      // Don't stop() here — session may still be launching. view.js will retry
-      // after 2s on 4409; calling stop() would kill a launching browser, creating
-      // a start→connect→stop→start loop.
+      // Only stop() when the session is in the Map (dead context — Chrome crashed).
+      // If it's not in the Map, the browser is still launching; stop() would kill
+      // it mid-start and create an infinite start→4409→stop→start loop.
+      if (browser.status(resolvedId).running) await browser.stop(resolvedId).catch(() => {});
       socket.close(4409, 'session_not_running');
       return;
     }
