@@ -24,13 +24,35 @@ else {
   let _accountId = null;
   let _retries = 0;
 
+  function startAndConnect() {
+    fetch(`/api/account-by-ref/${encodeURIComponent(ref)}/start`, {
+      method: 'POST',
+      credentials: 'same-origin',
+    })
+      .then(async (res) => {
+        if (res.status === 404) { fail('Nieznany link.'); return; }
+        const { accountId } = await res.json();
+        _accountId = accountId;
+        connect();
+      })
+      .catch(() => {
+        if (_retries < 30) {
+          _retries++;
+          setOverlayText(`Uruchamiam przeglądarkę\u2026 (${_retries})`);
+          setTimeout(startAndConnect, 3000);
+        } else {
+          fail('Błąd połączenia.');
+        }
+      });
+  }
+
   function connect() {
     viewer.onclose = (ev) => {
       if (_ready) return;
       if (ev.code === 4409 && _retries < 30) {
         _retries++;
-        setOverlayText(`Uruchamiam przeglądarkę… (${_retries})`);
-        setTimeout(connect, 2000);
+        setOverlayText(`Uruchamiam przeglądarkę\u2026 (${_retries})`);
+        setTimeout(startAndConnect, 2000);
       } else if (ev.code === 4404) {
         fail('Nieznany link.');
       } else {
@@ -40,16 +62,6 @@ else {
     viewer.connect(_accountId, ref);
   }
 
-  fetch(`/api/account-by-ref/${encodeURIComponent(ref)}/start`, {
-    method: 'POST',
-    credentials: 'same-origin',
-  })
-    .then(async (res) => {
-      if (res.status === 404) { fail('Nieznany link.'); return; }
-      const { accountId } = await res.json();
-      _accountId = accountId;
-      setOverlayText('Uruchamiam przeglądarkę…');
-      connect();
-    })
-    .catch(() => fail('Błąd połączenia.'));
+  setOverlayText('Uruchamiam przeglądarkę\u2026');
+  startAndConnect();
 }
