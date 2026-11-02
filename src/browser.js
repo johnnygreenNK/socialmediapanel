@@ -154,8 +154,9 @@ async function launch(accountId, adminIp) {
       '--disable-features=DnsOverHttps',
 
       // ─── Perf flags for high-latency links (mobile proxy) ───────
-      // QUIC is UDP — most SOCKS5 proxies only tunnel TCP, so skip for SOCKS5.
-      ...(isSocks5 ? [] : [
+      // QUIC is UDP. HTTP proxies use TCP CONNECT and can't tunnel UDP; SOCKS5
+      // providers rarely enable UDP either. Disable QUIC whenever a proxy is active.
+      ...(useProxy ? [] : [
         '--enable-quic',
         '--origin-to-force-quic-on=www.facebook.com:443,facebook.com:443,static.xx.fbcdn.net:443,scontent.xx.fbcdn.net:443,www.instagram.com:443,instagram.com:443',
       ]),
