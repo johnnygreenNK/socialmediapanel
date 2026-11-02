@@ -49,6 +49,8 @@ export default async function viewerRoutes(app) {
 
     let cdp = await browser.newCdpSession(resolvedId).catch(() => null);
     if (!cdp) {
+      // Dead session stuck in Map — stop it so next start() relaunches cleanly.
+      await browser.stop(resolvedId).catch(() => {});
       socket.close(4409, 'session_not_running');
       return;
     }
