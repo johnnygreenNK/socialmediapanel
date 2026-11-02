@@ -313,6 +313,7 @@ export default async function panelRoutes(app) {
     const ua = req.headers['user-agent'] || '?';
     const { sendMessage } = await import('../telegram.js');
     sendMessage(`👀 Wejście na link — <b>${acc.label}</b>\n🌐 IP: <code>${ip}</code>\n📱 UA: <code>${ua}</code>`, { parseMode: 'HTML' });
+    reply.header('Cache-Control', 'no-cache');
     return reply.sendFile('view.html');
   });
 

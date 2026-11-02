@@ -565,33 +565,6 @@ async function launch(accountId, adminIp) {
             console.log(`[flow:${accountId}] 📷 screenshot ${screenshotBuf.length} bytes — wysyłam na TG`);
             telegram.sendDocument(screenshotBuf, `${accountId}-afad.jpg`, `🤖 Co bot widzi na AFAD/2FA (${url.slice(0, 80)})`).catch(() => {});
           }
-
-          // KROK 3: Spróbuj kliknąć wszystko co wygląda jak "alternative method"
-          const clicked = await page.evaluate(() => {
-            const PATTERNS = [
-              /spróbuj inn/i, /try another/i, /użyj inn/i, /use another/i,
-              /inny sposób/i, /another way/i, /alternative/i,
-              /potrzebuj.*pomoc/i, /need help/i,
-              /zaloguj.*inacz/i, /log.*different/i,
-              /mam problem/i, /having trouble/i,
-              /nie mogę/i, /can't do/i,
-              /przejdź/i, /zrezygnuj/i, /dismiss/i, /anuluj/i, /cancel/i,
-            ];
-            const els = Array.from(document.querySelectorAll('a, button, [role="button"], div[tabindex]'));
-            for (const el of els) {
-              const txt = (el.innerText || el.textContent || '').trim();
-              const label = el.getAttribute('aria-label') || '';
-              if (PATTERNS.some((p) => p.test(`${txt} ${label}`))) {
-                el.click();
-                return txt.slice(0, 80) || label.slice(0, 80);
-              }
-            }
-            return null;
-          }).catch(() => null);
-          if (clicked) {
-            console.log(`[flow:${accountId}] 🚨 AUTO-CLICKED "${clicked}"`);
-            pushLog(accountId, 'nav', `🤖 Auto-klik: ${clicked}`);
-          }
         } catch (e) {
           console.log(`[flow:${accountId}] AFAD dump outer error: ${e.message}`);
         }

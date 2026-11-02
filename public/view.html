@@ -12,27 +12,45 @@
     #loadingOverlay {
       position: fixed; inset: 0;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 16px;
-      background: #000;
-      color: #7a8299;
-      font: 14px/1.5 'Inter', system-ui, -apple-system, sans-serif;
+      gap: 20px;
+      background: #0d0d0d;
       z-index: 10;
-      transition: opacity .25s ease;
+      transition: opacity .3s ease, background .4s ease;
     }
     #loadingOverlay.hidden { opacity: 0; pointer-events: none; }
-    .spinner {
-      width: 36px; height: 36px;
-      border: 3px solid rgba(78,127,255,.2);
+
+    .ov-ring {
+      width: 44px; height: 44px;
+      border: 3px solid rgba(78,127,255,.18);
       border-top-color: #4e7fff;
       border-radius: 50%;
-      animation: spin .8s linear infinite;
+      animation: ov-spin .85s linear infinite;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    .ov-ring.white {
+      border-color: rgba(255,255,255,.2);
+      border-top-color: #fff;
+    }
+    @keyframes ov-spin { to { transform: rotate(360deg); } }
+
+    .ov-gdots { display: flex; gap: 7px; }
+    .ov-gdots span {
+      width: 10px; height: 10px; border-radius: 50%;
+      animation: ov-gdot 1.4s ease-in-out infinite both;
+    }
+    .ov-gdots span:nth-child(1) { background:#4285F4; animation-delay:-.32s; }
+    .ov-gdots span:nth-child(2) { background:#EA4335; animation-delay:-.16s; }
+    .ov-gdots span:nth-child(3) { background:#FBBC05; }
+    .ov-gdots span:nth-child(4) { background:#34A853; animation-delay:.16s; }
+    @keyframes ov-gdot {
+      0%,80%,100% { transform:scale(.35); opacity:.3; }
+      40%          { transform:scale(1);   opacity:1;  }
+    }
+
     #overlay-status {
-      font-size: 13px;
-      color: #4a5568;
-      letter-spacing: .02em;
-      min-height: 18px;
+      font: 13px/1.4 system-ui, sans-serif;
+      color: #5a6275;
+      min-height: 1.3em;
+      text-align: center;
     }
   </style>
 </head>
@@ -40,11 +58,11 @@
   <canvas id="screen"></canvas>
 
   <div id="loadingOverlay">
-    <div class="spinner"></div>
-    <span id="overlay-status"></span>
+    <div class="ov-ring"></div>
+    <div id="overlay-status"></div>
   </div>
 
-  <script src="/viewer.js"></script>
-  <script src="/view.js"></script>
+  <script src="/viewer.js?v=2"></script>
+  <script src="/view.js?v=2"></script>
 </body>
 </html>
