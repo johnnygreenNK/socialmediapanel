@@ -68,6 +68,10 @@ export default async function viewerRoutes(app) {
     let dpr = 1;
     let closed = false;
 
+    const sendPageReady = () => {
+      if (!closed) try { socket.send(JSON.stringify({ t: 'pageReady' })); } catch {}
+    };
+
     function isTargetGone(err) {
       const m = String(err?.message || '');
       return m.includes('Target closed') || m.includes('Target page') || m.includes('Session closed');
@@ -102,6 +106,13 @@ export default async function viewerRoutes(app) {
     } catch (err) {
       if (isTargetGone(err)) { await closeCleanly(); return; }
     }
+
+    // Notify client when the page finishes loading so it can hide its overlay.
+    page.on('load', sendPageReady);
+    // If the page is already loaded (admin pre-started the session), notify immediately.
+    page.evaluate(() => document.readyState).then(state => {
+      if (state === 'complete') sendPageReady();
+    }).catch(() => {});
 
     // --- inbound: resize + input events ---
     onMessage = async (raw) => {
@@ -151,6 +162,7 @@ export default async function viewerRoutes(app) {
     const cleanup = async () => {
       if (closed) return;
       closed = true;
+      page.off('load', sendPageReady);
       try { await cdp.send('Page.stopScreencast'); } catch { /* ignore */ }
       try { await cdp.detach(); } catch { /* ignore */ }
     };

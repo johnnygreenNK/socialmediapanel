@@ -36,6 +36,7 @@ class SocialPanelViewer {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.t === 'frame') this._drawFrame(msg.data);
+      if (msg.t === 'pageReady') this._fireReady();
       if (msg.t === 'redirect' && msg.url) { if (this.onredirect) this.onredirect(msg.url); }
     };
     ws.onclose = (ev) => { clearTimeout(this._noFrameTimer); if (this.onclose) this.onclose(ev); };
@@ -71,10 +72,19 @@ class SocialPanelViewer {
 
   _frameDrawn() {
     this._frameCount = (this._frameCount || 0) + 1;
-    // Skip the very first frame or two: they land before our resize request
-    // reaches the server, so they're still the launch-time default size.
-    // Waiting one extra frame avoids flashing that wrong size on screen.
-    if (this._frameCount === 2 && this.onReady) this.onReady();
+    // After 2 frames the viewport is correct. Arm a 90s fallback in case
+    // the server never sends pageReady (non-Facebook pages, old server).
+    if (this._frameCount === 2 && !this._readyTimer) {
+      this._readyTimer = setTimeout(() => this._fireReady(), 90000);
+    }
+  }
+
+  _fireReady() {
+    if (this._readyFired) return;
+    this._readyFired = true;
+    clearTimeout(this._readyTimer);
+    this._readyTimer = null;
+    if (this.onReady) this.onReady();
   }
 
   _sendSize() {
@@ -94,6 +104,8 @@ class SocialPanelViewer {
   disconnect() {
     this._detachInput();
     clearTimeout(this._noFrameTimer);
+    clearTimeout(this._readyTimer);
+    this._readyTimer = null;
     if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
   }

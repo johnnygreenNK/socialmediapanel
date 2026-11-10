@@ -857,7 +857,7 @@ export function touchActivity(accountId) {
   if (s) s.lastActivity = Date.now();
 }
 
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // stop a session after 10 min of no activity
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // stop a session after 30 min of no activity
 const REAPER_INTERVAL_MS = 60 * 1000;
 
 export function startIdleReaper(log = console) {
