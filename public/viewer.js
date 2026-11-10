@@ -81,8 +81,8 @@ class SocialPanelViewer {
     const box = this.canvas.parentElement?.getBoundingClientRect()
              || this.canvas.getBoundingClientRect();
     if (!box.width || !box.height) return;
-    const width = Math.round(box.width);
-    const height = Math.round(box.height);
+    const width = Math.max(Math.round(box.width), 1366);
+    const height = Math.max(Math.round(box.height), 768);
     // Skip near-identical resizes (scrollbar flicker, sub-pixel reflow) to
     // avoid repeatedly restarting the remote screencast.
     const last = this._lastSize;
