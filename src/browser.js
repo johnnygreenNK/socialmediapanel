@@ -1483,6 +1483,25 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
           }
 
           await dbg(`auth passed, URL now: ${page.url()}`);
+          // After auth Google may redirect to Gmail instead of passwords.google.com.
+          // Navigate back before attempting the re-click.
+          if (!page.url().includes('passwords.google.com')) {
+            await dbg(`post-click-auth on ${page.url()} — back to passwords.google.com`);
+            await gotoTolerant('https://passwords.google.com/');
+            await page.waitForTimeout(2000);
+            if (isAuthPage(page.url())) {
+              const pwInpC = page.locator('input[type="password"]').first();
+              if (await pwInpC.count() && acc?.password) {
+                await pwInpC.fill(acc.password);
+                await clickDalej(page);
+                await page.waitForTimeout(2000);
+              }
+              if (isAuthPage(page.url())) {
+                await page.waitForURL((u) => !isAuthPage(u.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
+                await page.waitForTimeout(1000);
+              }
+            }
+          }
           // After challenge Google redirects to list, NOT to the entry detail.
           // Re-click via SPA (NOT page.goto — that would trigger another challenge).
           if (!page.url().includes('/password/')) {
@@ -1493,6 +1512,15 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             await page.waitForTimeout(1500);
             await dbg(`po re-klik URL: ${page.url()}`);
           }
+        }
+
+        // Guard: if we're still not on a detail page, skip — do NOT extract from list/Gmail.
+        if (!page.url().includes('/password/')) {
+          await dbg(`❌ entry ${i + 1}: not on detail page after click/auth (${page.url()}) — skipping`);
+          results.push(`entry-${i + 1} | (skipped — wrong URL: ${page.url()})`);
+          await fsp.appendFile(savePath, `entry-${i + 1} | (skipped — wrong URL: ${page.url()})\n`, 'utf8').catch(() => {});
+          if (onProgress) onProgress(results.length, total);
+          continue;
         }
 
         // Wait for shadow DOM to fully populate
