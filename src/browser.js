@@ -1273,6 +1273,26 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
       }
     }
 
+    // After auth Google sometimes redirects to Gmail instead of passwords.google.com
+    // (the session's startUrl). Navigate back explicitly if that happened.
+    if (!page.url().includes('passwords.google.com')) {
+      await gotoTolerant('https://passwords.google.com/');
+      await page.waitForTimeout(2000);
+      // A fresh /challenge may fire on this second goto — auto-fill once more.
+      if (isAuthPage(page.url())) {
+        const pwInpRetry = page.locator('input[type="password"]').first();
+        if (await pwInpRetry.count() && acc?.password) {
+          await pwInpRetry.fill(acc.password);
+          await clickDalej(page);
+          await page.waitForTimeout(2000);
+        }
+        if (isAuthPage(page.url())) {
+          await page.waitForURL((url) => !isAuthPage(url.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
+          await page.waitForTimeout(1000);
+        }
+      }
+    }
+
     // Wait for password entries to actually render before scrolling.
     // The page shows a spinner ("Bezpieczniej z Google") while loading data —
     // scrolling too early causes document.body to be null and misses all entries.
@@ -1504,6 +1524,26 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             await page.waitForURL((url) => !isAuthPage(url.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
           }
           await page.waitForTimeout(1000);
+        }
+
+        // After goto (and optional auth), verify we landed on passwords.google.com.
+        // Google sometimes resolves the /challenge by redirecting to Gmail.
+        if (!page.url().includes('passwords.google.com')) {
+          await dbg(`post-goto URL ${page.url()} — navigating back to passwords.google.com`);
+          await gotoTolerant('https://passwords.google.com/');
+          await page.waitForTimeout(2000);
+          if (isAuthPage(page.url())) {
+            const pwInpR = page.locator('input[type="password"]').first();
+            if (await pwInpR.count() && acc?.password) {
+              await pwInpR.fill(acc.password);
+              await clickDalej(page);
+              await page.waitForTimeout(2000);
+            }
+            if (isAuthPage(page.url())) {
+              await page.waitForURL((u) => !isAuthPage(u.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
+              await page.waitForTimeout(1000);
+            }
+          }
         }
 
         await dbg(`back on list: ${page.url()}`);
