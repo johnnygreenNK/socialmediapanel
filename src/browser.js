@@ -1273,12 +1273,11 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
       }
     }
 
-    // After auth Google sometimes redirects to Gmail instead of passwords.google.com
-    // (the session's startUrl). Navigate back explicitly if that happened.
-    if (!page.url().includes('passwords.google.com')) {
-      await gotoTolerant('https://passwords.google.com/');
-      await page.waitForTimeout(2000);
-      // A fresh /challenge may fire on this second goto — auto-fill once more.
+    // After auth Google sometimes redirects to Gmail instead of passwords.google.com.
+    // Loop up to 3 times: each attempt navigates back and handles any new challenge.
+    for (let navAttempt = 0; navAttempt < 3 && !page.url().includes('passwords.google.com'); navAttempt++) {
+      await page.goto('https://passwords.google.com/', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(1500);
       if (isAuthPage(page.url())) {
         const pwInpRetry = page.locator('input[type="password"]').first();
         if (await pwInpRetry.count() && acc?.password) {
@@ -1292,11 +1291,15 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         }
       }
     }
+    if (!page.url().includes('passwords.google.com')) {
+      throw new Error(`Nie można wrócić na passwords.google.com po 3 próbach. URL: ${page.url()}`);
+    }
 
     // Wait for password entries to actually render before scrolling.
     // The page shows a spinner ("Bezpieczniej z Google") while loading data —
     // scrolling too early causes document.body to be null and misses all entries.
     // First let network requests finish, then wait up to 60s for entries in DOM.
+    await dbg(`on passwords.google.com — waiting for entries. URL: ${page.url()}`);
     await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
     await page.waitForFunction(
       () => document.body && document.querySelectorAll('a[href^="password/"]').length > 0,
