@@ -1274,12 +1274,16 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     }
 
     // Wait for password entries to actually render before scrolling.
-    // The page shows a spinner ("Bezpieczniej z Google") while loading —
-    // scrolling before entries appear causes document.body to be null.
+    // The page shows a spinner ("Bezpieczniej z Google") while loading data —
+    // scrolling too early causes document.body to be null and misses all entries.
+    // First let network requests finish, then wait up to 60s for entries in DOM.
+    await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
     await page.waitForFunction(
       () => document.body && document.querySelectorAll('a[href^="password/"]').length > 0,
-      { timeout: 30000 }
-    ).catch(() => {}); // proceed even if no entries found — count check below will catch it
+      { timeout: 60000 }
+    ).catch((err) => {
+      throw new Error(`Hasła nie załadowały się w ciągu 60s — sprawdź czy konto jest zalogowane i czy proxy działa. (${page.url()})`);
+    });
 
     // Scroll to lazy-load all entries
     let prev = 0;
