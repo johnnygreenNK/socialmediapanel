@@ -1273,18 +1273,24 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
       }
     }
 
-    await page.waitForTimeout(2500);
+    // Wait for password entries to actually render before scrolling.
+    // The page shows a spinner ("Bezpieczniej z Google") while loading —
+    // scrolling before entries appear causes document.body to be null.
+    await page.waitForFunction(
+      () => document.body && document.querySelectorAll('a[href^="password/"]').length > 0,
+      { timeout: 30000 }
+    ).catch(() => {}); // proceed even if no entries found — count check below will catch it
 
     // Scroll to lazy-load all entries
     let prev = 0;
     for (let i = 0; i < 30; i++) {
-      const h = await page.evaluate(() => document.body.scrollHeight);
+      const h = await page.evaluate(() => document.body?.scrollHeight ?? 0);
       if (h === prev) break;
       prev = h;
-      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.evaluate(() => document.body && window.scrollTo(0, document.body.scrollHeight));
       await page.waitForTimeout(600);
     }
-    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.evaluate(() => document.body && window.scrollTo(0, 0));
     await page.waitForTimeout(500);
 
     // Count entries on list page — do NOT navigate away per-entry (triggers re-auth).
