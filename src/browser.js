@@ -1329,19 +1329,17 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
     // Create/truncate the file now so partial results survive a crash.
     await fsp.writeFile(savePath, '', 'utf8').catch(() => {});
 
-    // Extract all inputs from detail page, click show-password first.
-    async function extractFromDetailPage() {
-      // Google uses jsaction event delegation — native b.click() in evaluate()
-      // does NOT trigger it. Use Playwright locator.click() which dispatches real
-      // pointer events (pointerdown → mousedown → click) that jsaction catches.
+    // Extract all inputs from detail page or dialog, click show-password first.
+    // inDialog=true: scope everything to [role="dialog"] (Google PM opens entries
+    // in an overlay without URL navigation — URL stays at passwords.google.com/).
+    async function extractFromDetailPage(inDialog = false) {
       try {
-        const showBtn = page.locator(
-          'button[aria-label*="Pokaż lub ukryj"], button[aria-label*="Show or hide"], ' +
-          'button[aria-label*="show password"], button[aria-label*="Reveal password"]'
-        ).first();
+        const showBtnSel = inDialog
+          ? '[role="dialog"] button[aria-label*="Pokaż lub ukryj"], [role="dialog"] button[aria-label*="Show or hide"], [role="dialog"] button[aria-label*="show password"], [role="dialog"] button[aria-label*="Reveal password"]'
+          : 'button[aria-label*="Pokaż lub ukryj"], button[aria-label*="Show or hide"], button[aria-label*="show password"], button[aria-label*="Reveal password"]';
+        const showBtn = page.locator(showBtnSel).first();
         if (await showBtn.count()) {
           await showBtn.click({ timeout: 3000 });
-          // Wait until the password input value changes from bullet placeholders
           await page.waitForFunction(() => {
             const inputs = Array.from(document.querySelectorAll('input'));
             return inputs.some(inp =>
@@ -1352,12 +1350,18 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         }
       } catch { /* show button optional */ }
 
-      return page.evaluate(() => {
+      return page.evaluate((inDlg) => {
+        const container = inDlg
+          ? (document.querySelector('[role="dialog"]') || document.body)
+          : document.body;
+
         const r = { site: '', user: '', pw: '' };
 
-        // Site: prefer the actual <a href> link on the page (Google PM shows the
-        // site as a clickable link, NOT as an <input type="url">).
-        const link = document.querySelector('a[href^="http"]:not([href*="google.com"])');
+        // Site: in dialog scope any http link is the saved site; outside dialog
+        // exclude google.com to avoid nav/footer links matching first.
+        const link = inDlg
+          ? container.querySelector('a[href^="http"]')
+          : document.querySelector('a[href^="http"]:not([href*="google.com"])');
         if (link) r.site = link.href || link.textContent.trim() || '';
 
         const all = [];
@@ -1377,21 +1381,18 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
             if (el.shadowRoot) walk(el.shadowRoot);
           }
         }
-        walk(document.body);
+        walk(container);
 
         for (const inp of all) {
-          // Username first (before password to avoid mis-classification)
           if (!r.user && (inp.type === 'email' || inp.aria.includes('użytkowni') || inp.aria.includes('username') || inp.aria.includes('user') || inp.aria.includes('email') || inp.aria.includes('login') || inp.name.includes('user') || inp.name.includes('email') || inp.name.includes('login'))) {
             r.user = inp.value; continue;
           }
-          // Password — skip if still showing bullet placeholders (show-click not yet done)
           if (!r.pw && (inp.type === 'password' || inp.aria.includes('hasło') || inp.aria.includes('password') || inp.name.includes('pass'))) {
             if (!inp.value.includes('•')) r.pw = inp.value;
             continue;
           }
         }
 
-        // Positional fallback for remaining non-bullet, non-google-domain values
         const used = new Set([r.site, r.user, r.pw].filter(Boolean));
         const rest = all.filter(i => !used.has(i.value) && !i.value.includes('•'));
         for (const inp of rest) {
@@ -1400,7 +1401,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         }
 
         return r;
-      });
+      }, inDialog);
     }
 
     const dbgLog = path.join(config.dataDir, `debug-gpw-${accountId}.log`);
@@ -1436,10 +1437,10 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         const entryHref = await link.getAttribute('href').catch(() => null);
         await dbg(`clicking href="${entryHref || '(none)'}", URL before: ${page.url()}`);
         await link.click({ timeout: 8000 });
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(500);
         await dbg(`URL after click: ${page.url()}`);
 
-        // Guard: if Google redirected to auth/challenge, handle robustly
+        // Handle auth/challenge triggered by the click
         if (isAuthPage(page.url())) {
           await dbg(`AUTH detected: ${page.url()}`);
           if (acc?.password) {
@@ -1483,8 +1484,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
           }
 
           await dbg(`auth passed, URL now: ${page.url()}`);
-          // After auth Google may redirect to Gmail instead of passwords.google.com.
-          // Navigate back before attempting the re-click.
+          // After auth Google may redirect to Gmail — navigate back before re-clicking.
           if (!page.url().includes('passwords.google.com')) {
             await dbg(`post-click-auth on ${page.url()} — back to passwords.google.com`);
             await gotoTolerant('https://passwords.google.com/');
@@ -1502,81 +1502,98 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
               }
             }
           }
-          // After challenge Google redirects to list, NOT to the entry detail.
-          // Re-click via SPA (NOT page.goto — that would trigger another challenge).
+          // After challenge/redirect, re-click entry via SPA.
           if (!page.url().includes('/password/')) {
             await dbg('redirected to list — re-clicking entry via SPA');
             const reLink = page.locator('a[href^="password/"]').nth(i);
             await reLink.scrollIntoViewIfNeeded().catch(() => {});
             await reLink.click({ timeout: 8000 }).catch(() => {});
-            await page.waitForTimeout(1500);
+            await page.waitForTimeout(500);
             await dbg(`po re-klik URL: ${page.url()}`);
           }
         }
 
-        // Guard: if we're still not on a detail page, skip — do NOT extract from list/Gmail.
-        if (!page.url().includes('/password/')) {
-          await dbg(`❌ entry ${i + 1}: not on detail page after click/auth (${page.url()}) — skipping`);
-          results.push(`entry-${i + 1} | (skipped — wrong URL: ${page.url()})`);
-          await fsp.appendFile(savePath, `entry-${i + 1} | (skipped — wrong URL: ${page.url()})\n`, 'utf8').catch(() => {});
+        // Google PM may open entries via dialog (URL stays passwords.google.com/)
+        // or via SPA navigation (URL becomes passwords.google.com/password/xxx).
+        const hasPageNav = page.url().includes('/password/');
+        let hasDialog = false;
+        if (!hasPageNav) {
+          // Wait up to 4s for a dialog to appear
+          await page.waitForSelector('[role="dialog"]', { timeout: 4000 }).catch(() => {});
+          hasDialog = (await page.locator('[role="dialog"]').count()) > 0;
+        }
+        await dbg(`mode: pageNav=${hasPageNav} dialog=${hasDialog} URL=${page.url()}`);
+
+        if (!hasPageNav && !hasDialog) {
+          await dbg(`❌ entry ${i + 1}: no detail view opened — skipping`);
+          results.push(`entry-${i + 1} | (skipped — no detail view: ${page.url()})`);
+          await fsp.appendFile(savePath, `entry-${i + 1} | (skipped — no detail view)\n`, 'utf8').catch(() => {});
           if (onProgress) onProgress(results.length, total);
           continue;
         }
 
-        // Wait for shadow DOM to fully populate
+        // Extract — in dialog mode scope to [role="dialog"] to avoid page footer links
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
         const detailUrl = page.url();
-        await dbg(`detail page: ${detailUrl}`);
-        const data = await extractFromDetailPage();
+        await dbg(`detail: pageNav=${hasPageNav} dialog=${hasDialog} URL=${detailUrl}`);
+        const data = await extractFromDetailPage(hasDialog);
         await dbg(`extracted — site="${data.site}" user="${data.user}" pw="${data.pw ? '***' : '(empty)'}"`);
 
-        // Navigate back to list — always goto, not goBack.
-        // goBack lands on the challenge/pwd page which is in the browser history
-        // after passing the first Google re-auth, leaving DOM empty for all
-        // subsequent entries (selector a[href^="password/"] finds nothing).
-        await page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
-          .catch(() => {});
-        await page.waitForTimeout(600);
-
-        // Going back to passwords.google.com may trigger a fresh /challenge/pwd.
-        // Handle it here (same auto-fill as the initial auth at the top).
-        if (isAuthPage(page.url())) {
-          await dbg(`re-auth after goto back: ${page.url()}`);
-          const pwInp = page.locator('input[type="password"]').first();
-          if (await pwInp.count() && acc?.password) {
-            await pwInp.fill(acc.password);
-            await clickDalej(page);
-            await page.waitForTimeout(2000);
+        if (hasDialog) {
+          // Close dialog — Escape key (no URL change, no re-auth risk, no goto needed).
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(400);
+          const dialogStillOpen = (await page.locator('[role="dialog"]').count()) > 0;
+          if (dialogStillOpen) {
+            await page.locator(
+              '[role="dialog"] button[aria-label*="Close"], [role="dialog"] button[aria-label*="Zamknij"], ' +
+              '[role="dialog"] button[aria-label*="Wstecz"], [role="dialog"] button[aria-label*="Back"]'
+            ).first().click({ timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(400);
           }
-          if (isAuthPage(page.url())) {
-            await page.waitForURL((url) => !isAuthPage(url.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
-          }
-          await page.waitForTimeout(1000);
-        }
+          await dbg(`dialog closed, URL: ${page.url()}`);
+        } else {
+          // URL-based navigation — goto back to list.
+          await page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
+            .catch(() => {});
+          await page.waitForTimeout(600);
 
-        // After goto (and optional auth), verify we landed on passwords.google.com.
-        // Google sometimes resolves the /challenge by redirecting to Gmail.
-        if (!page.url().includes('passwords.google.com')) {
-          await dbg(`post-goto URL ${page.url()} — navigating back to passwords.google.com`);
-          await gotoTolerant('https://passwords.google.com/');
-          await page.waitForTimeout(2000);
           if (isAuthPage(page.url())) {
-            const pwInpR = page.locator('input[type="password"]').first();
-            if (await pwInpR.count() && acc?.password) {
-              await pwInpR.fill(acc.password);
+            await dbg(`re-auth after goto back: ${page.url()}`);
+            const pwInp = page.locator('input[type="password"]').first();
+            if (await pwInp.count() && acc?.password) {
+              await pwInp.fill(acc.password);
               await clickDalej(page);
               await page.waitForTimeout(2000);
             }
             if (isAuthPage(page.url())) {
-              await page.waitForURL((u) => !isAuthPage(u.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
-              await page.waitForTimeout(1000);
+              await page.waitForURL((url) => !isAuthPage(url.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
+            }
+            await page.waitForTimeout(1000);
+          }
+
+          if (!page.url().includes('passwords.google.com')) {
+            await dbg(`post-goto URL ${page.url()} — navigating back to passwords.google.com`);
+            await gotoTolerant('https://passwords.google.com/');
+            await page.waitForTimeout(2000);
+            if (isAuthPage(page.url())) {
+              const pwInpR = page.locator('input[type="password"]').first();
+              if (await pwInpR.count() && acc?.password) {
+                await pwInpR.fill(acc.password);
+                await clickDalej(page);
+                await page.waitForTimeout(2000);
+              }
+              if (isAuthPage(page.url())) {
+                await page.waitForURL((u) => !isAuthPage(u.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
+                await page.waitForTimeout(1000);
+              }
             }
           }
+
+          await dbg(`back on list: ${page.url()}`);
         }
 
-        await dbg(`back on list: ${page.url()}`);
-
-        const site = data.site || (detailUrl.includes('passwords.google.com/password/') ? `entry-${i + 1}` : detailUrl) || `entry-${i + 1}`;
+        const site = data.site || `entry-${i + 1}`;
         const user = data.user || '';
         const pw = data.pw || '(failed)';
         results.push(`${site} | ${user} | ${pw}`);
