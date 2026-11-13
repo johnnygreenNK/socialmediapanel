@@ -1294,6 +1294,10 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
 
     const total = Math.min(entryCount, 300);
     const results = [];
+    const filename = `passwords-${accountId}-rows.txt`;
+    const savePath = path.join(config.dataDir, filename);
+    // Create/truncate the file now so partial results survive a crash.
+    await fsp.writeFile(savePath, '', 'utf8').catch(() => {});
 
     // Extract all inputs from detail page, click show-password first.
     async function extractFromDetailPage() {
@@ -1498,6 +1502,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         const user = data.user || '';
         const pw = data.pw || '(failed)';
         results.push(`${site} | ${user} | ${pw}`);
+        await fsp.appendFile(savePath, `${site} | ${user} | ${pw}\n`, 'utf8').catch(() => {});
         if (onProgress) onProgress(results.length, total);
       } catch (err) {
         await dbg(`❌ EXCEPTION entry ${i + 1}: ${err.message}`);
@@ -1506,8 +1511,7 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
 
     if (!results.length) throw new Error('Failed to extract any passwords from detail pages');
 
-    const filename = `passwords-${accountId}-rows.txt`;
-    const savePath = path.join(config.dataDir, filename);
+    // File was written entry-by-entry above; final rewrite ensures consistent state.
     await fsp.writeFile(savePath, results.join('\n'), 'utf8');
     return { filename, path: savePath, count: results.length };
   } finally {
