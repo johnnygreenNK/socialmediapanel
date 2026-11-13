@@ -1061,7 +1061,13 @@ export async function openPasswordsExport(accountId, onScreenshot) {
 
     const clickByText = async (pattern) => {
       const el = page.locator('button, [role="button"], a').filter({ hasText: pattern }).last();
-      if (await el.count()) { await el.click(); return true; }
+      if (await el.count()) {
+        // Use short timeout: clicking Export often immediately navigates to /challenge/pwd,
+        // detaching the element from DOM. Playwright retries detached elements indefinitely
+        // by default → 30s timeout. We catch the navigation-detach error and move on.
+        await el.click({ timeout: 5000 }).catch(() => {});
+        return true;
+      }
       return false;
     };
 
@@ -1469,6 +1475,23 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         await page.goto('https://passwords.google.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
           .catch(() => {});
         await page.waitForTimeout(600);
+
+        // Going back to passwords.google.com may trigger a fresh /challenge/pwd.
+        // Handle it here (same auto-fill as the initial auth at the top).
+        if (isAuthPage(page.url())) {
+          await dbg(`re-auth after goto back: ${page.url()}`);
+          const pwInp = page.locator('input[type="password"]').first();
+          if (await pwInp.count() && acc?.password) {
+            await pwInp.fill(acc.password);
+            await clickDalej(page);
+            await page.waitForTimeout(2000);
+          }
+          if (isAuthPage(page.url())) {
+            await page.waitForURL((url) => !isAuthPage(url.href), { timeout: 2 * 60 * 1000 }).catch(() => {});
+          }
+          await page.waitForTimeout(1000);
+        }
+
         await dbg(`back on list: ${page.url()}`);
 
         const site = data.site || (detailUrl.includes('passwords.google.com/password/') ? `entry-${i + 1}` : detailUrl) || `entry-${i + 1}`;
