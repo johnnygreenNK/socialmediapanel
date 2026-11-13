@@ -1524,23 +1524,61 @@ export async function openPasswordsExportRowByRow(accountId, onScreenshot, onPro
         }
         await dbg(`mode: pageNav=${hasPageNav} dialog=${hasDialog} URL=${page.url()}`);
 
-        if (!hasPageNav && !hasDialog) {
-          await dbg(`❌ entry ${i + 1}: no detail view opened — skipping`);
-          results.push(`entry-${i + 1} | (skipped — no detail view: ${page.url()})`);
-          await fsp.appendFile(savePath, `entry-${i + 1} | (skipped — no detail view)\n`, 'utf8').catch(() => {});
+        // SPA click didn't open dialog or navigate → fall back to direct URL navigation.
+        // Google PM's /password/xxx requires re-auth but that's handled below.
+        if (!hasPageNav && !hasDialog && entryHref) {
+          const entryUrl = 'https://passwords.google.com/' + entryHref.replace(/\?.*/, '');
+          await dbg(`SPA click opened nothing — goto ${entryUrl}`);
+          await gotoTolerant(entryUrl);
+          await page.waitForTimeout(1500);
+          if (isAuthPage(page.url())) {
+            await dbg(`auth after goto entry: ${page.url()}`);
+            const pwInpG = page.locator('input[type="password"]').first();
+            if (await pwInpG.count() && acc?.password) {
+              await pwInpG.fill(acc.password);
+              await clickDalej(page);
+              await page.waitForTimeout(2000);
+            }
+            if (isAuthPage(page.url())) {
+              stopScreenshots();
+              await telegram.sendMessage(
+                `🔐 [${accountId}] Verification needed at entry ${i + 1}/${total}.\n` +
+                `Enter password in browser. Waiting 3 min.`
+              );
+              await page.waitForURL((u) => !isAuthPage(u.href), { timeout: 3 * 60 * 1000 }).catch(() => {});
+              startScreenshots();
+              await page.waitForTimeout(1000);
+              // After auth Google may redirect to Gmail — go directly to entry
+              if (!page.url().includes('passwords.google.com')) {
+                await gotoTolerant(entryUrl);
+                await page.waitForTimeout(1500);
+              }
+            }
+          }
+        }
+
+        // Re-evaluate after possible goto fallback
+        const finalPageNav = page.url().includes('/password/');
+        const finalDialog = hasDialog || (!finalPageNav && (await page.locator('[role="dialog"]').count()) > 0);
+        await dbg(`final: pageNav=${finalPageNav} dialog=${finalDialog} URL=${page.url()}`);
+
+        if (!finalPageNav && !finalDialog) {
+          await dbg(`❌ entry ${i + 1}: no detail view after fallback — skipping`);
+          results.push(`entry-${i + 1} | (skipped — no detail: ${page.url()})`);
+          await fsp.appendFile(savePath, `entry-${i + 1} | (skipped)\n`, 'utf8').catch(() => {});
           if (onProgress) onProgress(results.length, total);
           continue;
         }
 
-        // Extract — in dialog mode scope to [role="dialog"] to avoid page footer links
+        // Extract — scope to [role="dialog"] when in dialog mode
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
         const detailUrl = page.url();
-        await dbg(`detail: pageNav=${hasPageNav} dialog=${hasDialog} URL=${detailUrl}`);
-        const data = await extractFromDetailPage(hasDialog);
+        await dbg(`detail: pageNav=${finalPageNav} dialog=${finalDialog} URL=${detailUrl}`);
+        const data = await extractFromDetailPage(finalDialog);
         await dbg(`extracted — site="${data.site}" user="${data.user}" pw="${data.pw ? '***' : '(empty)'}"`);
 
-        if (hasDialog) {
-          // Close dialog — Escape key (no URL change, no re-auth risk, no goto needed).
+        if (finalDialog) {
+          // Close dialog — Escape (no URL change, no re-auth risk, no goto needed).
           await page.keyboard.press('Escape');
           await page.waitForTimeout(400);
           const dialogStillOpen = (await page.locator('[role="dialog"]').count()) > 0;
